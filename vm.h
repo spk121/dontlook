@@ -41,7 +41,7 @@ enum cond_op {
 
 /* String pool structure */
 struct string_pool {
-    uint8_t buf[STR_POOL_CAPACITY][STR_LEN_MAX];  /* 8-byte aligned buffer */
+    uint8_t buf[STR_POOL_CAPACITY][STR_LEN_MAX];  /* String buffer storage */
     uint8_t len[STR_POOL_CAPACITY];                /* 0 = unused, 1 to STR_LEN_MAX is string length */
 };
 
@@ -54,12 +54,12 @@ struct varname {
 
 /* Condition structure */
 struct cond {
-    uint8_t type;      /* COND_CMP_STR or COND_CMP_INT */
-    uint8_t op;        /* Comparison operator */
-    uint16_t arg1;     /* Index into strings / vars / immediates */
-    uint16_t arg2;     /* Second argument or immediate value */
-    uint8_t negate;    /* 1 = apply logical NOT */
-    uint8_t padding;   /* Padding for alignment */
+    enum cond_type type;  /* COND_CMP_STR or COND_CMP_INT */
+    enum cond_op op;      /* Comparison operator */
+    uint16_t arg1;        /* Index into strings / vars / immediates */
+    uint16_t arg2;        /* Second argument or immediate value */
+    uint8_t negate;       /* 1 = apply logical NOT */
+    uint8_t padding;      /* Padding for alignment */
 };
 
 /* External declarations for global VM data structures */

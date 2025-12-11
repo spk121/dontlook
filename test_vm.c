@@ -41,8 +41,8 @@ int main(void)
     
     /* Verify condition table is zeroed */
     for (i = 0U; i < COND_CAPACITY; i++) {
-        assert(g_cond_table[i].type == 0U);
-        assert(g_cond_table[i].op == 0U);
+        assert(g_cond_table[i].type == COND_CMP_STR);
+        assert(g_cond_table[i].op == COND_OP_EQ);
     }
     assert(g_cond_count == 0U);
     printf("✓ Condition table initialized correctly\n");

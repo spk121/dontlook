@@ -24,14 +24,10 @@ void vm_init(void)
     (void)memset(&g_string_pool, 0, sizeof(g_string_pool));
     
     /* Initialize immediate values */
-    for (i = 0U; i < IMM_CAPACITY; i++) {
-        g_imm[i] = 0;
-    }
+    (void)memset(g_imm, 0, sizeof(g_imm));
     
     /* Initialize integer variables */
-    for (i = 0U; i < INTVAR_CAPACITY; i++) {
-        g_intvar[i] = 0;
-    }
+    (void)memset(g_intvar, 0, sizeof(g_intvar));
     
     /* Initialize variable names */
     for (i = 0U; i < VARNAME_CAPACITY; i++) {
