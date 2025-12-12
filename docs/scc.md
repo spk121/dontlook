@@ -390,7 +390,7 @@ The VM detects and reports the following error conditions:
 
 - **No Unions**: Separate stacks for int, float, and string indices
 - **Explicit Casts**: Type conversions use dedicated opcodes (ITOF, FTOI)
-- **Fixed-Width Types**: Use `int32_t`, `uint16_t`, `uint8_t`, `float` (32-bit)
+- **Fixed-Width Types**: Use `int32_t`, `uint16_t`, `uint8_t`. Float operations assume IEEE 754 single-precision (32-bit) floating point.
 - **Enum for Opcodes**: Opcodes defined as enumeration constants
 
 #### 6.3 Deterministic Behavior
@@ -423,10 +423,10 @@ typedef struct {
 
 #### 7.1 Memory Footprint
 
-- **Instruction Memory**: ~16 bytes × 1024 = ~16 KB
-- **Global Storage**: 256×4 + 256×4 + 128×256 = ~34 KB
+- **Instruction Memory**: ~24 bytes × 1024 = ~24 KB (each instruction_t is 24 bytes: 2+2+12+8)
+- **Global Storage**: 256×4 (intval) + 256×4 (floatval) + 128×256 (strval) = 1024 + 1024 + 32768 = ~34 KB
 - **Stack Storage**: ~2 KB per execution context
-- **Total**: Approximately 52 KB base footprint
+- **Total**: Approximately 60 KB base footprint
 
 #### 7.2 Execution Speed
 
