@@ -153,11 +153,11 @@ stack_frame_t stack_frames[STACK_DEPTH];
 ```
 
 **Stack Frame Usage:**
-- **vars[]**: Used for passing parameters and return values between caller/callee
-- **int_locals[], uint_locals[], float_locals[], str_locals[]**: Frame-local variable storage
-- **return_addr**: Saved PC for function return
+- **vars[]**: Used for passing parameters and return values between caller/callee (not zeroed on CALL to preserve parameters)
+- **int_locals[], uint_locals[], float_locals[], str_locals[]**: Frame-local variable storage (zeroed on CALL)
+- **return_addr**: Saved PC for function return (zeroed on CALL, then set)
 - Frames are pre-allocated; SP indicates current frame level (0-15)
-- When calling a function, caller pushes values into `vars[]` of next frame level
+- When calling a function, caller uses PUSH_PARAM_* opcodes to push values/references into `vars[]` of the next frame level (with bounds check for SP+1)
 - Callee accesses parameters from its own `vars[]` and uses `*_locals[]` for local variables
 - On return, callee places return values in its own `vars[]` for caller to retrieve
 
@@ -384,40 +384,50 @@ The opcodes are organized into categories based on operation type and operand ad
 
 | Opcode | Name | Description | Operands |
 |--------|------|-------------|----------|
-| 0x0100 | PUSHV_I | Push signed integer value to stack var | us1 = var slot, i1 = value |
-| 0x0101 | PUSHV_U | Push unsigned integer value to stack var | us1 = var slot, ui1 = value |
-| 0x0102 | PUSHV_F | Push float value to stack var | us1 = var slot, f1 = value |
-| 0x0103 | PUSHV_GREF_I | Push global int reference to stack var | us1 = var slot, us2 = global idx |
-| 0x0104 | PUSHV_GREF_U | Push global uint reference to stack var | us1 = var slot, us2 = global idx |
-| 0x0105 | PUSHV_GREF_F | Push global float reference to stack var | us1 = var slot, us2 = global idx |
-| 0x0106 | PUSHV_GREF_S | Push global string reference to stack var | us1 = var slot, us2 = global idx |
-| 0x0107 | POPV_I | Pop signed integer value from stack var to register | us1 = var slot, us2 = dest int reg |
-| 0x0108 | POPV_U | Pop unsigned integer value from stack var to register | us1 = var slot, us2 = dest uint reg |
-| 0x0109 | POPV_F | Pop float value from stack var to register | us1 = var slot, us2 = dest float reg |
+| 0x0100 | PUSHV_I | Push immediate signed integer value to current frame's stack var | us1 = var slot, i1 = value |
+| 0x0101 | PUSHV_U | Push immediate unsigned integer value to current frame's stack var | us1 = var slot, ui1 = value |
+| 0x0102 | PUSHV_F | Push immediate float value to current frame's stack var | us1 = var slot, f1 = value |
+| 0x0103 | PUSHV_GREF_I | Push global int reference to current frame's stack var | us1 = var slot, us2 = global idx |
+| 0x0104 | PUSHV_GREF_U | Push global uint reference to current frame's stack var | us1 = var slot, us2 = global idx |
+| 0x0105 | PUSHV_GREF_F | Push global float reference to current frame's stack var | us1 = var slot, us2 = global idx |
+| 0x0106 | PUSHV_GREF_S | Push global string reference to current frame's stack var | us1 = var slot, us2 = global idx |
+| 0x0107 | PUSHV_R_I | Push signed integer register value to current frame's stack var | us1 = var slot, us2 = src int reg (0-3) |
+| 0x0108 | PUSHV_R_U | Push unsigned integer register value to current frame's stack var | us1 = var slot, us2 = src uint reg (0-2) |
+| 0x0109 | PUSHV_R_F | Push float register value to current frame's stack var | us1 = var slot, us2 = src float reg (0-1) |
+| 0x010A | PUSH_PARAM_I | Push immediate signed integer value to next frame's stack var (for params) | us1 = var slot, i1 = value |
+| 0x010B | PUSH_PARAM_U | Push immediate unsigned integer value to next frame's stack var (for params) | us1 = var slot, ui1 = value |
+| 0x010C | PUSH_PARAM_F | Push immediate float value to next frame's stack var (for params) | us1 = var slot, f1 = value |
+| 0x010D | PUSH_PARAM_GREF_I | Push global int reference to next frame's stack var (for params) | us1 = var slot, us2 = global idx |
+| 0x010E | PUSH_PARAM_GREF_U | Push global uint reference to next frame's stack var (for params) | us1 = var slot, us2 = global idx |
+| 0x010F | PUSH_PARAM_GREF_F | Push global float reference to next frame's stack var (for params) | us1 = var slot, us2 = global idx |
+| 0x0110 | PUSH_PARAM_GREF_S | Push global string reference to next frame's stack var (for params) | us1 = var slot, us2 = global idx |
+| 0x0111 | POPV_I | Pop signed integer value from current frame's stack var to register | us1 = var slot, us2 = dest int reg |
+| 0x0112 | POPV_U | Pop unsigned integer value from current frame's stack var to register | us1 = var slot, us2 = dest uint reg |
+| 0x0113 | POPV_F | Pop float value from current frame's stack var to register | us1 = var slot, us2 = dest float reg |
 
 #### 4.9 I/O Operations
 
 | Opcode | Name | Description | Operands |
 |--------|------|-------------|----------|
-| 0x0110 | PRINTI | Print signed integer from register | us1 = int reg (0-3) |
-| 0x0111 | PRINTU | Print unsigned integer from register | us1 = uint reg (0-2) |
-| 0x0112 | PRINTF | Print float from register | us1 = float reg (0-1) |
-| 0x0113 | PRINTS | Print string | us1 = string pool idx |
-| 0x0114 | PRINTLN | Print newline | - |
-| 0x0115 | READI | Read signed integer to register | us1 = dest int reg (0-3) |
-| 0x0116 | READU | Read unsigned integer to register | us1 = dest uint reg (0-2) |
-| 0x0117 | READF | Read float to register | us1 = dest float reg (0-1) |
-| 0x0118 | READS | Read string to pool | us1 = dest string pool idx |
+| 0x0114 | PRINTI | Print signed integer from register | us1 = int reg (0-3) |
+| 0x0115 | PRINTU | Print unsigned integer from register | us1 = uint reg (0-2) |
+| 0x0116 | PRINTF | Print float from register | us1 = float reg (0-1) |
+| 0x0117 | PRINTS | Print string | us1 = string pool idx |
+| 0x0118 | PRINTLN | Print newline | - |
+| 0x0119 | READI | Read signed integer to register | us1 = dest int reg (0-3) |
+| 0x011A | READU | Read unsigned integer to register | us1 = dest uint reg (0-2) |
+| 0x011B | READF | Read float to register | us1 = dest float reg (0-1) |
+| 0x011C | READS | Read string to pool | us1 = dest string pool idx |
 
 #### 4.10 Memory and System Operations
 
 | Opcode | Name | Description | Operands |
 |--------|------|-------------|----------|
-| 0x0120 | CLEARI_G | Clear global signed integer | us1 = global idx |
-| 0x0121 | CLEARU_G | Clear global unsigned integer | us1 = global idx |
-| 0x0122 | CLEARF_G | Clear global float | us1 = global idx |
-| 0x0123 | CLEARS_G | Clear global string reference | us1 = global idx |
-| 0x0124 | CLEARV | Clear stack variable slot | us1 = var slot |
+| 0x011D | CLEARI_G | Clear global signed integer | us1 = global idx |
+| 0x011E | CLEARU_G | Clear global unsigned integer | us1 = global idx |
+| 0x011F | CLEARF_G | Clear global float | us1 = global idx |
+| 0x0120 | CLEARS_G | Clear global string reference | us1 = global idx |
+| 0x0121 | CLEARV | Clear stack variable slot | us1 = var slot |
 
 ### 5. VM Execution Model
 
@@ -475,10 +485,16 @@ The VM uses pre-allocated stack frames (maximum depth 16). Each frame is complet
 
 - **Stack Variable Management**:
   ```c
-  // Push value to stack variable (for parameter passing)
+  // Push value to current frame's stack variable (PUSHV_* opcodes)
   if (var_slot >= STACK_VAR_COUNT) error("invalid var slot");
-  stack_frames[SP].vars[var_slot].type = SV_INT;
-  stack_frames[SP].vars[var_slot].i32 = value;
+  stack_frames[SP].vars[var_slot].type = SV_INT;  // Or appropriate type
+  stack_frames[SP].vars[var_slot].i32 = value;    // Or register value for PUSHV_R_*
+  
+  // Push value to next frame's stack variable (PUSH_PARAM_* opcodes, for parameter passing)
+  if (SP >= STACK_DEPTH - 1) error("stack overflow, cannot push params");
+  if (var_slot >= STACK_VAR_COUNT) error("invalid var slot");
+  stack_frames[SP + 1].vars[var_slot].type = SV_INT;  // Or appropriate type
+  stack_frames[SP + 1].vars[var_slot].i32 = value;
   
   // Pop value from stack variable (retrieve parameter/return value)
   if (var_slot >= STACK_VAR_COUNT) error("invalid var slot");
@@ -514,12 +530,17 @@ The VM uses pre-allocated stack frames (maximum depth 16). Each frame is complet
 **CALL Operation:**
 1. Check stack overflow: `if (SP >= STACK_DEPTH - 1) error("stack overflow")`
 2. Increment SP: `SP++`
-3. Zero the new frame's local storage: `memset(&stack_frames[SP], 0, sizeof(stack_frame_t))`
+3. Zero the new frame's local storage (but NOT vars[]): 
+   - `memset(stack_frames[SP].int_locals, 0, sizeof(stack_frames[SP].int_locals));`
+   - `memset(stack_frames[SP].uint_locals, 0, sizeof(stack_frames[SP].uint_locals));`
+   - `memset(stack_frames[SP].float_locals, 0, sizeof(stack_frames[SP].float_locals));`
+   - `memset(stack_frames[SP].str_locals, 0, sizeof(stack_frames[SP].str_locals));`
+   - `stack_frames[SP].return_addr = 0;`  // Zero return_addr
 4. Save return address: `stack_frames[SP].return_addr = PC + 1`
 5. Set PC to target address: `PC = ui1`
 
 **Parameter Passing:**
-- Caller uses PUSHV_* opcodes to place parameters in `stack_frames[SP + 1].vars[]` before CALL
+- Caller uses PUSH_PARAM_* opcodes to place parameters in `stack_frames[SP + 1].vars[]` before CALL (with bounds check for SP+1)
 - After CALL, callee accesses parameters from its own `stack_frames[SP].vars[]`
 - Parameters can be values (SV_INT, SV_UINT, SV_FLOAT) or references (SV_GLOBAL_*_IDX)
 
@@ -529,25 +550,25 @@ The VM uses pre-allocated stack frames (maximum depth 16). Each frame is complet
 3. Decrement SP: `SP--`
 
 **Return Values:**
-- Before RET, callee uses PUSHV_* opcodes to place return values in its own `stack_frames[SP].vars[]`
+- Before RET, callee uses PUSHV_* or PUSHV_R_* opcodes to place return values in its own `stack_frames[SP].vars[]`
 - After RET, caller uses POPV_* opcodes to retrieve return values from `stack_frames[SP + 1].vars[]`
 
 **Example Call Sequence:**
 ```
 // Caller (at frame level 0):
-PUSHV_I us1=0, i1=10         // Push param 1 to vars[0] of next frame
-PUSHV_I us1=1, i1=20         // Push param 2 to vars[1] of next frame
-CALL ui1=<function_addr>      // SP becomes 1
+PUSH_PARAM_I us1=0, i1=10    // Push param 1 to vars[0] of next frame
+PUSH_PARAM_I us1=1, i1=20    // Push param 2 to vars[1] of next frame
+CALL ui1=<function_addr>     // SP becomes 1, vars[0] and vars[1] preserved
 
 // Callee (now at frame level 1):
 POPV_I us1=0, us2=0          // Pop param 1 from vars[0] to register A
 POPV_I us1=1, us2=1          // Pop param 2 from vars[1] to register B
 ADDI_R us1=0, us2=0, i1=1    // A = A + B
-PUSHV_I us1=0, i1=<A>        // Push return value to vars[0]
+PUSHV_R_I us1=0, us2=0       // Push return value (register A) to vars[0]
 RET                          // SP becomes 0, PC restored
 
 // Caller (back at frame level 0):
-POPV_I us1=0, us2=2          // Pop return value from vars[0] to register C
+POPV_I us1=0, us2=0          // Pop return value from vars[0] to register A
 ```
 
 #### 5.7 Condition Flags
@@ -614,6 +635,7 @@ Per MISRA-C Rule 10.1: "Shift and bitwise operations shall only be performed on 
 - **No Undefined Behavior**: All edge cases explicitly handled
 - **Predictable Execution**: No implementation-defined behavior in VM core
 - **Pre-allocated Resources**: Fixed stack depth prevents unbounded recursion
+- **Bounds Checking**: All array accesses validated, including SP+1 checks for PUSH_PARAM_* opcodes to prevent buffer overflow
 
 #### 6.5 Code Structure
 
@@ -700,19 +722,19 @@ Here's a simple example showing how a program would be encoded with the register
 # where add(a, b) { return a + b; }
 
 # Main program:
-0: PUSHV_I   us1=0, i1=5         # Push param 1 (value 5) to next frame's vars[0]
-1: PUSHV_I   us1=1, i1=3         # Push param 2 (value 3) to next frame's vars[1]
-2: CALL      ui1=10              # Call function at address 10
-3: POPV_I    us1=0, us2=0        # Pop return value from vars[0] to register A
-4: PRINTI    us1=0               # Print result
+0: PUSH_PARAM_I us1=0, i1=5  # Push param 1 (value 5) to next frame's vars[0]
+1: PUSH_PARAM_I us1=1, i1=3  # Push param 2 (value 3) to next frame's vars[1]
+2: CALL      ui1=10          # Call function at address 10
+3: POPV_I    us1=0, us2=0    # Pop return value from vars[0] to register A
+4: PRINTI    us1=0           # Print result
 5: HALT
 
 # Function 'add' at address 10:
-10: POPV_I   us1=0, us2=0        # Pop param 1 to register A
-11: POPV_I   us1=1, us2=1        # Pop param 2 to register B
+10: POPV_I   us1=0, us2=0    # Pop param 1 to register A
+11: POPV_I   us1=1, us2=1    # Pop param 2 to register B
 12: ADDI_R   us1=0, us2=0, i1=1  # A = A + B
-13: PUSHV_I  us1=0, i1=<A>       # Push return value (from A) to vars[0]
-14: RET                          # Return to caller
+13: PUSHV_R_I us1=0, us2=0   # Push return value (register A) to vars[0]
+14: RET                      # Return to caller
 ```
 
 ### 9. Future Extensions
