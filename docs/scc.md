@@ -58,7 +58,7 @@ typedef struct {
 int32_t intval[256];
 
 /* Global string storage */
-#define STRVAL_LEN 128
+#define STRVAL_LEN 128  /* Maximum 128 strings; uint8_t indices (0-127) are sufficient */
 char strval[STRVAL_LEN][256];
 
 /* Global float variables */
@@ -226,7 +226,7 @@ The opcodes are organized into categories based on operation type and operand ad
 | 0x0091 | CATS_S | Concatenate stack strings | i1 = dest idx |
 | 0x0092 | COPYS | Copy string | i1 = dest idx, i2 = src idx |
 | 0x0093 | LENS | Get string length | i1 = string idx (result to int stack) |
-| 0x0094 | SUBS | Substring | i1 = dest idx, i2 = src idx, i3 = start pos (int32_t), us1 = length (uint16_t for 0-255 range) |
+| 0x0094 | SUBS | Substring | i1 = dest idx, i2 = src idx, i3 = start pos, us1 = length (uint16_t) |
 | 0x0095 | CLRS | Clear string | i1 = string idx |
 | 0x0096 | CHRS | Get character at index | i1 = string idx, i2 = char idx |
 | 0x0097 | SETCHRS | Set character at index | i1 = string idx, i2 = char idx, i3 = char value |
@@ -424,10 +424,10 @@ typedef struct {
 
 #### 7.1 Memory Footprint
 
-- **Instruction Memory**: ~24 bytes × 1024 = ~24 KB (each instruction_t is 24 bytes: 2+2+4+4+4+4+4)
+- **Instruction Memory**: ~24-28 bytes × 1024 = ~24-28 KB (each instruction_t is nominally 24 bytes: 2+2+4+4+4+4+4, but may be 28 bytes with struct padding for alignment)
 - **Global Storage**: 256×4 (intval) + 256×4 (floatval) + 128×256 (strval) = 1024 + 1024 + 32768 = ~34 KB
 - **Stack Storage**: ~2 KB per execution context
-- **Total**: Approximately 60 KB base footprint
+- **Total**: Approximately 60-64 KB base footprint (depending on struct padding)
 
 #### 7.2 Execution Speed
 
