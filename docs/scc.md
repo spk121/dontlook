@@ -566,20 +566,20 @@ The VM uses pre-allocated stack frames (maximum depth 16). Each frame is complet
 
 **Example Call Sequence:**
 ```
-// Caller (at frame level 0):
-PUSH_PARAM_I us1=0, i1=10    // Push param 1 to vars[0] of next frame
-PUSH_PARAM_I us1=1, i1=20    // Push param 2 to vars[1] of next frame
-CALL ui1=<function_addr>     // SP becomes 1, vars[0] and vars[1] preserved
+# Caller (at frame level 0):
+PUSH_PARAM_I us1=0, i1=10    # Push param 1 to vars[0] of next frame
+PUSH_PARAM_I us1=1, i1=20    # Push param 2 to vars[1] of next frame
+CALL ui1=<function_addr>     # SP becomes 1, vars[0] and vars[1] preserved
 
-// Callee (now at frame level 1):
-POPV_I us1=0, us2=0          // Pop param 1 from vars[0] to register A
-POPV_I us1=1, us2=1          // Pop param 2 from vars[1] to register B
-ADDI_R us1=0, us2=0, i1=1    // A = A + B
-PUSH_RETURN_R_I us1=0, us2=0 // Push return value (register A) to caller's vars[0]
-RET                          // SP becomes 0, PC restored
+# Callee (now at frame level 1):
+POPV_I us1=0, us2=0          # Pop param 1 from vars[0] to register A
+POPV_I us1=1, us2=1          # Pop param 2 from vars[1] to register B
+ADDI_R us1=0, us2=0, i1=1    # A = A + B
+PUSH_RETURN_R_I us1=0, us2=0 # Push return value (register A) to caller's vars[0]
+RET                          # SP becomes 0, PC restored
 
-// Caller (back at frame level 0):
-POPV_I us1=0, us2=0          // Pop return value from vars[0] to register A
+# Caller (back at frame level 0):
+POPV_I us1=0, us2=0          # Pop return value from vars[0] to register A
 ```
 
 #### 5.7 Condition Flags
