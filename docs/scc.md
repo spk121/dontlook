@@ -226,7 +226,7 @@ The opcodes are organized into categories based on operation type and operand ad
 | 0x0091 | CATS_S | Concatenate stack strings | i1 = dest idx |
 | 0x0092 | COPYS | Copy string | i1 = dest idx, i2 = src idx |
 | 0x0093 | LENS | Get string length | i1 = string idx (result to int stack) |
-| 0x0094 | SUBS | Substring | i1 = dest idx, i2 = src idx, i3 = start, us1 = length |
+| 0x0094 | SUBS | Substring | i1 = dest idx, i2 = src idx, i3 = start pos (int32_t), us1 = length (uint16_t for 0-255 range) |
 | 0x0095 | CLRS | Clear string | i1 = string idx |
 | 0x0096 | CHRS | Get character at index | i1 = string idx, i2 = char idx |
 | 0x0097 | SETCHRS | Set character at index | i1 = string idx, i2 = char idx, i3 = char value |
@@ -390,7 +390,8 @@ The VM detects and reports the following error conditions:
 
 - **No Unions**: Separate stacks for int, float, and string indices
 - **Explicit Casts**: Type conversions use dedicated opcodes (ITOF, FTOI)
-- **Fixed-Width Types**: Use `int32_t`, `uint16_t`, `uint8_t`. Float operations assume IEEE 754 single-precision (32-bit) floating point.
+- **Fixed-Width Types**: Use `int32_t`, `uint16_t`, `uint8_t` for integer types
+- **Float Requirement**: Implementation requires IEEE 754 single-precision (32-bit) floating point support
 - **Enum for Opcodes**: Opcodes defined as enumeration constants
 
 #### 6.3 Deterministic Behavior
@@ -423,7 +424,7 @@ typedef struct {
 
 #### 7.1 Memory Footprint
 
-- **Instruction Memory**: ~24 bytes × 1024 = ~24 KB (each instruction_t is 24 bytes: 2+2+12+8)
+- **Instruction Memory**: ~24 bytes × 1024 = ~24 KB (each instruction_t is 24 bytes: 2+2+4+4+4+4+4)
 - **Global Storage**: 256×4 (intval) + 256×4 (floatval) + 128×256 (strval) = 1024 + 1024 + 32768 = ~34 KB
 - **Stack Storage**: ~2 KB per execution context
 - **Total**: Approximately 60 KB base footprint
