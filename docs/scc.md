@@ -155,7 +155,7 @@ stack_frame_t stack_frames[STACK_DEPTH];
 **Stack Frame Usage:**
 - **vars[]**: Used for passing parameters and return values between caller/callee (not zeroed on CALL to preserve parameters)
 - **int_locals[], uint_locals[], float_locals[], str_locals[]**: Frame-local variable storage (zeroed on CALL)
-- **return_addr**: Saved PC for function return (zeroed on CALL, then set)
+- **return_addr**: Saved PC for function return (set on CALL)
 - Frames are pre-allocated; SP indicates current frame level (0-15)
 - When calling a function, caller uses PUSH_PARAM_* opcodes to push values/references into `vars[]` of the next frame level (with bounds check for SP+1)
 - Callee accesses parameters from its own `vars[]` and uses `*_locals[]` for local variables
@@ -535,7 +535,6 @@ The VM uses pre-allocated stack frames (maximum depth 16). Each frame is complet
    - `memset(stack_frames[SP].uint_locals, 0, sizeof(stack_frames[SP].uint_locals));`
    - `memset(stack_frames[SP].float_locals, 0, sizeof(stack_frames[SP].float_locals));`
    - `memset(stack_frames[SP].str_locals, 0, sizeof(stack_frames[SP].str_locals));`
-   - `stack_frames[SP].return_addr = 0;`  // Zero return_addr
 4. Save return address: `stack_frames[SP].return_addr = PC + 1`
 5. Set PC to target address: `PC = ui1`
 
