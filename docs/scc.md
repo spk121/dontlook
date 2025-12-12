@@ -58,7 +58,7 @@ typedef struct {
 int32_t intval[256];
 
 /* Global string storage */
-#define STRVAL_LEN 128  /* Maximum 128 strings; uint8_t indices (0-127) are sufficient */
+#define STRVAL_LEN 128  /* Maximum 128 strings (indices 0-127); uint8_t type is sufficient */
 char strval[STRVAL_LEN][256];
 
 /* Global float variables */
@@ -424,8 +424,8 @@ typedef struct {
 
 #### 7.1 Memory Footprint
 
-- **Instruction Memory**: ~24-28 bytes × 1024 = ~24-28 KB (each instruction_t is nominally 24 bytes: 2+2+4+4+4+4+4, but may be 28 bytes with struct padding for alignment)
-- **Global Storage**: 256×4 (intval) + 256×4 (floatval) + 128×256 (strval) = 1024 + 1024 + 32768 = ~34 KB
+- **Instruction Memory**: ~24-28 KB for 1024 instructions (each instruction_t: 2+2+4+4+4+4+4 = 24 bytes base, may have padding)
+- **Global Storage**: 256×4 (intval) + 256×4 (floatval) + 128×256 (strval) = 1024 + 1024 + 32768 = 34816 bytes ≈ 34 KB
 - **Stack Storage**: ~2 KB per execution context
 - **Total**: Approximately 60-64 KB base footprint (depending on struct padding)
 
