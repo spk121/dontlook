@@ -153,7 +153,7 @@ stack_frame_t stack_frames[STACK_DEPTH];
 ```
 
 **Stack Frame Usage:**
-- **vars[]**: Used for passing parameters and return values between caller/callee (not zeroed on CALL to preserve parameters)
+- **vars[]**: Used for passing parameters and return values between caller/callee (preserved during CALL to maintain parameters set by PUSH_PARAM_* opcodes)
 - **int_locals[], uint_locals[], float_locals[], str_locals[]**: Frame-local variable storage (zeroed on CALL)
 - **return_addr**: Saved PC for function return (set on CALL)
 - Frames are pre-allocated; SP indicates current frame level (0-15)
