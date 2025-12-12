@@ -401,33 +401,39 @@ The opcodes are organized into categories based on operation type and operand ad
 | 0x010E | PUSH_PARAM_GREF_U | Push global uint reference to next frame's stack var (for params) | us1 = var slot, us2 = global idx |
 | 0x010F | PUSH_PARAM_GREF_F | Push global float reference to next frame's stack var (for params) | us1 = var slot, us2 = global idx |
 | 0x0110 | PUSH_PARAM_GREF_S | Push global string reference to next frame's stack var (for params) | us1 = var slot, us2 = global idx |
-| 0x0111 | POPV_I | Pop signed integer value from current frame's stack var to register | us1 = var slot, us2 = dest int reg |
-| 0x0112 | POPV_U | Pop unsigned integer value from current frame's stack var to register | us1 = var slot, us2 = dest uint reg |
-| 0x0113 | POPV_F | Pop float value from current frame's stack var to register | us1 = var slot, us2 = dest float reg |
+| 0x0111 | PUSH_RETURN_I | Push immediate signed integer value to previous frame's stack var (for returns) | us1 = var slot, i1 = value |
+| 0x0112 | PUSH_RETURN_U | Push immediate unsigned integer value to previous frame's stack var (for returns) | us1 = var slot, ui1 = value |
+| 0x0113 | PUSH_RETURN_F | Push immediate float value to previous frame's stack var (for returns) | us1 = var slot, f1 = value |
+| 0x0114 | PUSH_RETURN_R_I | Push signed integer register value to previous frame's stack var (for returns) | us1 = var slot, us2 = src int reg (0-3) |
+| 0x0115 | PUSH_RETURN_R_U | Push unsigned integer register value to previous frame's stack var (for returns) | us1 = var slot, us2 = src uint reg (0-2) |
+| 0x0116 | PUSH_RETURN_R_F | Push float register value to previous frame's stack var (for returns) | us1 = var slot, us2 = src float reg (0-1) |
+| 0x0117 | POPV_I | Pop signed integer value from current frame's stack var to register | us1 = var slot, us2 = dest int reg |
+| 0x0118 | POPV_U | Pop unsigned integer value from current frame's stack var to register | us1 = var slot, us2 = dest uint reg |
+| 0x0119 | POPV_F | Pop float value from current frame's stack var to register | us1 = var slot, us2 = dest float reg |
 
 #### 4.9 I/O Operations
 
 | Opcode | Name | Description | Operands |
 |--------|------|-------------|----------|
-| 0x0114 | PRINTI | Print signed integer from register | us1 = int reg (0-3) |
-| 0x0115 | PRINTU | Print unsigned integer from register | us1 = uint reg (0-2) |
-| 0x0116 | PRINTF | Print float from register | us1 = float reg (0-1) |
-| 0x0117 | PRINTS | Print string | us1 = string pool idx |
-| 0x0118 | PRINTLN | Print newline | - |
-| 0x0119 | READI | Read signed integer to register | us1 = dest int reg (0-3) |
-| 0x011A | READU | Read unsigned integer to register | us1 = dest uint reg (0-2) |
-| 0x011B | READF | Read float to register | us1 = dest float reg (0-1) |
-| 0x011C | READS | Read string to pool | us1 = dest string pool idx |
+| 0x011A | PRINTI | Print signed integer from register | us1 = int reg (0-3) |
+| 0x011B | PRINTU | Print unsigned integer from register | us1 = uint reg (0-2) |
+| 0x011C | PRINTF | Print float from register | us1 = float reg (0-1) |
+| 0x011D | PRINTS | Print string | us1 = string pool idx |
+| 0x011E | PRINTLN | Print newline | - |
+| 0x011F | READI | Read signed integer to register | us1 = dest int reg (0-3) |
+| 0x0120 | READU | Read unsigned integer to register | us1 = dest uint reg (0-2) |
+| 0x0121 | READF | Read float to register | us1 = dest float reg (0-1) |
+| 0x0122 | READS | Read string to pool | us1 = dest string pool idx |
 
 #### 4.10 Memory and System Operations
 
 | Opcode | Name | Description | Operands |
 |--------|------|-------------|----------|
-| 0x011D | CLEARI_G | Clear global signed integer | us1 = global idx |
-| 0x011E | CLEARU_G | Clear global unsigned integer | us1 = global idx |
-| 0x011F | CLEARF_G | Clear global float | us1 = global idx |
-| 0x0120 | CLEARS_G | Clear global string reference | us1 = global idx |
-| 0x0121 | CLEARV | Clear stack variable slot | us1 = var slot |
+| 0x0123 | CLEARI_G | Clear global signed integer | us1 = global idx |
+| 0x0124 | CLEARU_G | Clear global unsigned integer | us1 = global idx |
+| 0x0125 | CLEARF_G | Clear global float | us1 = global idx |
+| 0x0126 | CLEARS_G | Clear global string reference | us1 = global idx |
+| 0x0127 | CLEARV | Clear stack variable slot | us1 = var slot |
 
 ### 5. VM Execution Model
 
@@ -496,6 +502,12 @@ The VM uses pre-allocated stack frames (maximum depth 16). Each frame is complet
   stack_frames[SP + 1].vars[var_slot].type = SV_INT;  // Or appropriate type
   stack_frames[SP + 1].vars[var_slot].i32 = value;
   
+  // Push value to previous frame's stack variable (PUSH_RETURN_* opcodes, for return values)
+  if (SP == 0) error("stack underflow, cannot push returns");
+  if (var_slot >= STACK_VAR_COUNT) error("invalid var slot");
+  stack_frames[SP - 1].vars[var_slot].type = SV_INT;  // Or appropriate type
+  stack_frames[SP - 1].vars[var_slot].i32 = value;    // Or register value for PUSH_RETURN_R_*
+  
   // Pop value from stack variable (retrieve parameter/return value)
   if (var_slot >= STACK_VAR_COUNT) error("invalid var slot");
   if (stack_frames[SP].vars[var_slot].type != SV_INT) error("type mismatch");
@@ -549,8 +561,8 @@ The VM uses pre-allocated stack frames (maximum depth 16). Each frame is complet
 3. Decrement SP: `SP--`
 
 **Return Values:**
-- Before RET, callee uses PUSHV_* or PUSHV_R_* opcodes to place return values in its own `stack_frames[SP].vars[]`
-- After RET, caller uses POPV_* opcodes to retrieve return values from `stack_frames[SP + 1].vars[]`
+- Before RET, callee uses PUSH_RETURN_* or PUSH_RETURN_R_* opcodes to place return values in the caller's `stack_frames[SP - 1].vars[]`
+- After RET, caller uses POPV_* opcodes to retrieve return values from its own `stack_frames[SP].vars[]`
 
 **Example Call Sequence:**
 ```
@@ -563,7 +575,7 @@ CALL ui1=<function_addr>     // SP becomes 1, vars[0] and vars[1] preserved
 POPV_I us1=0, us2=0          // Pop param 1 from vars[0] to register A
 POPV_I us1=1, us2=1          // Pop param 2 from vars[1] to register B
 ADDI_R us1=0, us2=0, i1=1    // A = A + B
-PUSHV_R_I us1=0, us2=0       // Push return value (register A) to vars[0]
+PUSH_RETURN_R_I us1=0, us2=0 // Push return value (register A) to caller's vars[0]
 RET                          // SP becomes 0, PC restored
 
 // Caller (back at frame level 0):
@@ -732,7 +744,7 @@ Here's a simple example showing how a program would be encoded with the register
 10: POPV_I   us1=0, us2=0    # Pop param 1 to register A
 11: POPV_I   us1=1, us2=1    # Pop param 2 to register B
 12: ADDI_R   us1=0, us2=0, i1=1  # A = A + B
-13: PUSHV_R_I us1=0, us2=0   # Push return value (register A) to vars[0]
+13: PUSH_RETURN_R_I us1=0, us2=0   # Push return value (register A) to caller's vars[0]
 14: RET                      # Return to caller
 ```
 
