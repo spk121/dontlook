@@ -197,10 +197,28 @@ typedef struct large_instruction {
 - The `imm_typeN` fields in the header indicate how to interpret the corresponding `immN` payload
 - `IMM_TYPE_NONE`: No immediate value in this slot
 - `IMM_TYPE_UCHAR`, `IMM_TYPE_USHORT`, `IMM_TYPE_UINT`, `IMM_TYPE_INT`, `IMM_TYPE_FLOAT`: Literal values
-- `IMM_TYPE_STACK_VAR_REF`: Reference to a stack variable (frame_idx + var_idx)
+- `IMM_TYPE_STACK_VAR_REF`: Reference to a stack variable via stack_var_ref_t structure
 - `IMM_TYPE_GLOBAL_REF`: Index to a global variable
 - `IMM_TYPE_MEMBUF_REF`: Index to a memory buffer
 - `IMM_TYPE_MEMBUF_POS`: Position/offset within a memory buffer
+
+**Stack Variable Reference Encoding:**
+
+When `IMM_TYPE_STACK_VAR_REF` is used, the immediate value is interpreted as a `stack_var_ref_t` structure:
+
+```c
+typedef struct {
+    uint16_t frame_idx; /* Stack frame index (0-31) */
+    uint16_t var_idx;   /* Variable index inside the stack frame (0-15 for stack_vars, 0-63 for locals) */
+} stack_var_ref_t;
+```
+
+This allows instructions to reference:
+- **Stack variables in other frames**: `{frame_idx=1, var_idx=0}` refers to `stack_frames[1].stack_vars[0]`
+- **Local variables**: When using special encoding or separate opcodes
+- **Return value**: The `ret_val` field requires special handling as it's not part of the indexed arrays
+
+Note: In the examples below, stack_var_ref values are shown in pseudo-notation as `{frame=F, var=V}` for clarity. The actual encoding packs both values into a 32-bit immediate field.
 
 ##### 3.2.4 Stack Structure
 
@@ -291,10 +309,11 @@ All control flow operations are **tiny instructions** (4 bytes) except CALL and 
 |--------|------|------|-------------|----------|
 | 0x10 | LOAD_G | Small | Load global variable to stack var | operand = stack var slot, imm1 = global idx |
 | 0x11 | LOAD_L | Small | Load local variable to stack var | operand = stack var slot, imm1 = local idx |
-| 0x12 | LOAD_S | Small | Load stack variable to stack var | operand = dest slot, imm1 = src stack_var_ref |
+| 0x12 | LOAD_S | Small | Load from another frame's stack var | operand = dest slot, imm1 = stack_var_ref {frame, var} |
 | 0x13 | LOAD_I_I32 | Small | Load immediate int32 to stack var | operand = stack var slot, imm1 = value (int) |
 | 0x14 | LOAD_I_U32 | Small | Load immediate uint32 to stack var | operand = stack var slot, imm1 = value (uint) |
 | 0x15 | LOAD_I_F32 | Small | Load immediate float to stack var | operand = stack var slot, imm1 = value (float) |
+| 0x16 | LOAD_RET | Small | Load return value from frame | operand = dest stack var slot, imm1 = frame idx |
 
 ##### 4.3.2 Store Operations
 
@@ -302,7 +321,8 @@ All control flow operations are **tiny instructions** (4 bytes) except CALL and 
 |--------|------|------|-------------|----------|
 | 0x20 | STORE_G | Small | Store stack var to global variable | operand = stack var slot, imm1 = global idx |
 | 0x21 | STORE_L | Small | Store stack var to local variable | operand = stack var slot, imm1 = local idx |
-| 0x22 | STORE_S | Small | Store stack var to stack variable | operand = src slot, imm1 = dest stack_var_ref |
+| 0x22 | STORE_S | Small | Store to another frame's stack var | operand = src slot, imm1 = stack_var_ref {frame, var} |
+| 0x23 | STORE_RET | Small | Store to return value of frame | operand = src stack var slot, imm1 = frame idx |
 
 #### 4.4 Arithmetic Operations
 
@@ -523,15 +543,15 @@ Function calls use stack frames to maintain separate execution contexts. The mec
 Before calling a function, the caller sets up parameters in the next frame's stack_vars[]:
 ```c
 // Caller (at frame level 0):
-LOAD_I_I32 operand=0, imm1=10          // Load 10 into stack_vars[0]
-STORE_S operand=0, imm1=(frame=1,var=0) // Store to next frame's stack_vars[0]
-LOAD_I_I32 operand=1, imm1=20          // Load 20 into stack_vars[1]
-STORE_S operand=1, imm1=(frame=1,var=1) // Store to next frame's stack_vars[1]
-CALL imm1=<function_addr>              // Call function
+LOAD_I_I32 operand=0, imm1=10                // Load 10 into stack_vars[0]
+STORE_S operand=0, imm1={frame=1, var=0}     // Store to next frame's stack_vars[0]
+LOAD_I_I32 operand=1, imm1=20                // Load 20 into stack_vars[1]
+STORE_S operand=1, imm1={frame=1, var=1}     // Store to next frame's stack_vars[1]
+CALL imm1=<function_addr>                    // Call function
 
 // Callee (now at frame level 1):
 // Parameters are already in stack_vars[0] and stack_vars[1]
-ADD_I32 operand=2, imm1=0, imm2=1      // Add params, result in stack_vars[2]
+ADD_I32 operand=2, imm1=0, imm2=1            // Add params, result in stack_vars[2]
 ```
 
 **RET Operation:**
@@ -543,11 +563,11 @@ ADD_I32 operand=2, imm1=0, imm2=1      // Add params, result in stack_vars[2]
 Before returning, the callee stores the return value in ret_val:
 ```c
 // Callee stores return value
-STORE_S operand=2, imm1=(ret_val)      // Store result to ret_val
+STORE_RET operand=2, imm1=SP                 // Store stack_vars[2] to current frame's ret_val
 RET
 
-// Caller retrieves return value
-LOAD_S operand=0, imm1=(ret_val of SP+1) // Load return value to stack_vars[0]
+// Caller retrieves return value (after RET, SP has decremented)
+LOAD_RET operand=0, imm1=(SP+1)              // Load return value from frame SP+1 to stack_vars[0]
 ```
 
 **Complete Function Call Example:**
@@ -556,20 +576,20 @@ LOAD_S operand=0, imm1=(ret_val of SP+1) // Load return value to stack_vars[0]
 # where add(a, b) { return a + b; }
 
 # Caller (at frame level 0):
-LOAD_I_I32 operand=0, imm1=5           # Load param 1
-STORE_S operand=0, imm1=(1,0)          # Store to next frame's stack_vars[0]
-LOAD_I_I32 operand=1, imm1=3           # Load param 2
-STORE_S operand=1, imm1=(1,1)          # Store to next frame's stack_vars[1]
-CALL imm1=<add_addr>                   # Call add()
-LOAD_S operand=0, imm1=(1,ret_val)     # Load return value
-PRINT_I32 imm1=0                       # Print result
+LOAD_I_I32 operand=0, imm1=5                 # Load param 1
+STORE_S operand=0, imm1={frame=1, var=0}     # Store to next frame's stack_vars[0]
+LOAD_I_I32 operand=1, imm1=3                 # Load param 2
+STORE_S operand=1, imm1={frame=1, var=1}     # Store to next frame's stack_vars[1]
+CALL imm1=<add_addr>                         # Call add(), SP becomes 1
+LOAD_RET operand=0, imm1=1                   # Load return value from frame 1
+PRINT_I32 imm1=0                             # Print result
 HALT
 
 # Function 'add' (at frame level 1):
 <add_addr>:
-ADD_I32 operand=2, imm1=0, imm2=1      # stack_vars[2] = stack_vars[0] + stack_vars[1]
-STORE_S operand=2, imm1=(ret_val)      # Store to ret_val
-RET                                     # Return
+ADD_I32 operand=2, imm1=0, imm2=1            # stack_vars[2] = stack_vars[0] + stack_vars[1]
+STORE_RET operand=2, imm1=SP                 # Store result to ret_val (imm1=SP means current frame)
+RET                                          # Return, SP becomes 0
 ```
 
 #### 5.7 Memory Buffer Operations
@@ -724,19 +744,19 @@ HALT
 # where add(a, b) { return a + b; }
 
 main:
-    LOAD_I_I32 operand=0, imm1=5           # Prepare param 1
-    STORE_S operand=0, imm1=(1,0)          # Store to next frame's stack_vars[0]
-    LOAD_I_I32 operand=1, imm1=3           # Prepare param 2
-    STORE_S operand=1, imm1=(1,1)          # Store to next frame's stack_vars[1]
-    CALL imm1=add_func                     # Call add function
-    LOAD_S operand=0, imm1=(1,ret_val)     # Get return value
-    PRINT_I32 imm1=0                       # Print result
+    LOAD_I_I32 operand=0, imm1=5                 # Prepare param 1
+    STORE_S operand=0, imm1={frame=1, var=0}     # Store to next frame's stack_vars[0]
+    LOAD_I_I32 operand=1, imm1=3                 # Prepare param 2
+    STORE_S operand=1, imm1={frame=1, var=1}     # Store to next frame's stack_vars[1]
+    CALL imm1=add_func                           # Call add function, SP becomes 1
+    LOAD_RET operand=0, imm1=1                   # Get return value from frame 1
+    PRINT_I32 imm1=0                             # Print result
     HALT
 
 add_func:
     # Parameters are in stack_vars[0] and stack_vars[1]
-    ADD_I32 operand=2, imm1=0, imm2=1      # Add parameters
-    STORE_S operand=2, imm1=(ret_val)      # Store return value
+    ADD_I32 operand=2, imm1=0, imm2=1            # Add parameters
+    STORE_RET operand=2, imm1=SP                 # Store return value to current frame's ret_val
     RET
 ```
 
