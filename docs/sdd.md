@@ -11,549 +11,548 @@ Stipple is a MISRA-C compliant interpreted language with syntax roughly similar 
 The VM is designed to comply with MISRA-C guidelines, which impose the following constraints:
 
 - **No dynamic memory allocation**: All data structures use fixed-size arrays
-- **No unions**: Opcodes use a fixed format with all possible operand types
-- **Type safety**: Explicit type conversions and bounds checking
+- **Limited use of unions**: Unions are used sparingly and only where necessary for type-safe variant types (var_value_t, membuf_t, instruction_payload_t)
+- **Type safety**: Explicit type conversions, bounds checking, and type tags for variant types
 - **Deterministic behavior**: No undefined or implementation-defined behavior
 
 ### 3. VM Architecture
 
 #### 3.1 Core Components
 
-The Stipple VM is a register-based virtual machine with stack support, containing the following components:
+The Stipple VM is a stack-based virtual machine containing the following components:
 
-1. **Instruction Memory**: Array of opcodes representing the program
-2. **Registers**: General-purpose and special-purpose registers for computations
-3. **Global Storage**: Fixed-size storage for variables
-4. **Stack Frames**: Pre-allocated stack frames (maximum depth 16) for function calls
+1. **Instruction Memory**: Array of variable-sized instructions representing the program
+2. **Global Variables**: 256 typed global variables (g_vars[])
+3. **Global Memory Buffers**: 256 typed memory buffers for arrays/strings (g_membuf[])
+4. **Stack Frames**: Pre-allocated stack frames (maximum depth 32) for function calls
 5. **Program Counter (PC)**: Points to the current instruction
 6. **Stack Pointer (SP)**: Points to the current stack frame
-7. **Condition Flags**: For comparison and branching operations
 
 #### 3.2 Data Structures
 
-##### 3.2.1 Opcode Format
+##### 3.2.1 Global Variables
 
-Each opcode has a uniform structure to comply with MISRA-C restrictions:
+Global variables are stored in a fixed array with explicit type tracking:
+
+```c
+#define G_VARS_COUNT 256
+
+typedef enum {
+    V_VOID,             /* Variable is unused */
+    V_U8,               /* 4 unsigned 8-bit characters */
+    V_U16,              /* 2 unsigned 16-bit integers */
+    V_I32,              /* Signed 32-bit integer value */
+    V_U32,              /* Unsigned 32-bit integer values */
+    V_UC,               /* A Unicode codepoint encoded as a 32-bit signed integer */
+    V_FLOAT,            /* Float value */
+    V_GLOBAL_VAR_IDX,   /* Reference to global variable, encoded as u32 */
+    V_STACK_VAR_IDX,    /* Reference to a stack variable, encoded as stack_var_ref_t */
+    V_BUF_IDX,          /* Reference to one of the memory buffers, encoded as u32 */
+    V_BUF_POS           /* A location inside memory buffer, encoded as u32 */
+} var_value_type_t;
+
+typedef struct {
+    var_value_type_t type;
+    union {
+        uint8_t u8x4[4];
+        uint16_t u16x2[2];
+        uint32_t u32;
+        int32_t i32;
+        float f32;
+        stack_var_ref_t stack_var_ref;
+        index_t global_var_idx;
+        index_t membuf_idx;
+        pos_t membuf_pos;
+    } val;
+} var_value_t;
+
+var_value_t g_vars[G_VARS_COUNT];
+```
+
+**Type Usage:**
+- **V_VOID**: Unused variable slot
+- **V_U8**: Four 8-bit unsigned characters packed in one variable (e.g., for small strings or byte sequences)
+- **V_U16**: Two 16-bit unsigned integers packed in one variable
+- **V_I32**: Single signed 32-bit integer
+- **V_U32**: Single unsigned 32-bit integer
+- **V_UC**: Unicode codepoint (stored as signed 32-bit integer per Unicode standard)
+- **V_FLOAT**: Single-precision floating-point value
+- **V_GLOBAL_VAR_IDX**: Index reference to another global variable (for indirect access/pointers)
+- **V_STACK_VAR_IDX**: Reference to a stack variable (contains frame_idx and var_idx)
+- **V_BUF_IDX**: Index reference to a memory buffer
+- **V_BUF_POS**: Position/offset within a memory buffer (for buffer indexing)
+
+##### 3.2.2 Global Memory Buffers
+
+Memory buffers provide array storage with explicit type tracking:
+
+```c
+#define G_MEMBUF_LEN 256
+#define G_MEMBUF_COUNT 256
+
+typedef enum {
+    MB_VOID,    /* Buffer is unused */
+    MB_U8,      /* Array of 256 unsigned 8-bit values */
+    MB_U16,     /* Array of 128 unsigned 16-bit values */
+    MB_I32,     /* Array of 64 signed 32-bit values */
+    MB_U32,     /* Array of 64 unsigned 32-bit values */
+    MB_FLOAT    /* Array of 64 float values */
+} membuf_type_t;
+
+typedef struct {
+    membuf_type_t type;
+    union {
+        uint8_t u8x256[G_MEMBUF_LEN];
+        uint16_t u16x128[G_MEMBUF_LEN/2];
+        uint32_t u32x64[G_MEMBUF_LEN/4];
+        int32_t i32x64[G_MEMBUF_LEN/4];
+        float f32x64[G_MEMBUF_LEN/4];
+    } buf;
+} membuf_t;
+
+membuf_t g_membuf[G_MEMBUF_COUNT];
+```
+
+**Buffer Type Usage:**
+- **MB_VOID**: Unused buffer slot
+- **MB_U8**: 256 bytes (used for strings, byte arrays, or raw data)
+- **MB_U16**: 128 16-bit unsigned integers (for larger numeric arrays)
+- **MB_I32**: 64 32-bit signed integers (for signed integer arrays)
+- **MB_U32**: 64 32-bit unsigned integers (for unsigned integer arrays)
+- **MB_FLOAT**: 64 single-precision floats (for floating-point arrays)
+
+All buffers are 256 bytes in size, but the interpretation changes based on type. Strings are stored in MB_U8 buffers with null termination.
+
+##### 3.2.3 Instruction Format
+
+Instructions have a variable-length format with a common header and optional payload:
+
+```c
+typedef enum {
+    IMM_TYPE_NONE = 0,
+    IMM_TYPE_UCHAR = 1,
+    IMM_TYPE_USHORT = 2,
+    IMM_TYPE_UINT = 3,
+    IMM_TYPE_INT = 4,
+    IMM_TYPE_FLOAT = 5,
+    IMM_TYPE_STACK_VAR_REF = 6,
+    IMM_TYPE_GLOBAL_REF = 7,
+    IMM_TYPE_MEMBUF_REF = 8,
+    IMM_TYPE_MEMBUF_POS = 9
+} imm_type_t;
+
+typedef struct instruction_header {
+    uint8_t opcode;           /* Operation code (0-255) */
+    uint8_t operand;          /* Operand: specializes the opcode */
+    uint16_t payload_len : 4; /* Length of the payload in 4-byte words (0-3) */
+    uint16_t imm_type1 : 4;   /* Immediate type for field 1 */
+    uint16_t imm_type2 : 4;   /* Immediate type for field 2 */
+    uint16_t imm_type3 : 4;   /* Immediate type for field 3 */
+} instruction_header_t;
+
+typedef union instruction_payload {
+    uint8_t u8x4[4];
+    uint16_t u16x2[2];
+    uint32_t u32;
+    int32_t i32;
+    float f32;
+    stack_var_ref_t stack_var_ref;
+    index_t global_var_idx;
+    index_t membuf_idx;
+    pos_t membuf_pos;
+} instruction_payload_t;
+```
+
+**Instruction Sizes:**
+- **Tiny (4 bytes)**: Header only, no payload (payload_len = 0)
+- **Small (8 bytes)**: Header + 1 payload word (payload_len = 1)
+- **Medium (12 bytes)**: Header + 2 payload words (payload_len = 2)
+- **Large (16 bytes)**: Header + 3 payload words (payload_len = 3)
+
+```c
+typedef struct tiny_instruction {
+    instruction_header_t header;
+} tiny_instruction_t;
+
+typedef struct small_instruction {
+    instruction_header_t header;
+    instruction_payload_t imm1;
+} small_instruction_t;
+
+typedef struct medium_instruction {
+    instruction_header_t header;
+    instruction_payload_t imm1;
+    instruction_payload_t imm2;
+} medium_instruction_t;
+
+typedef struct large_instruction {
+    instruction_header_t header;
+    instruction_payload_t imm1;
+    instruction_payload_t imm2;
+    instruction_payload_t imm3;
+} large_instruction_t;
+```
+
+**Immediate Type Interpretation:**
+- The `imm_typeN` fields in the header indicate how to interpret the corresponding `immN` payload
+- `IMM_TYPE_NONE`: No immediate value in this slot
+- `IMM_TYPE_UCHAR`, `IMM_TYPE_USHORT`, `IMM_TYPE_UINT`, `IMM_TYPE_INT`, `IMM_TYPE_FLOAT`: Literal values
+- `IMM_TYPE_STACK_VAR_REF`: Reference to a stack variable via stack_var_ref_t structure
+- `IMM_TYPE_GLOBAL_REF`: Index to a global variable
+- `IMM_TYPE_MEMBUF_REF`: Index to a memory buffer
+- `IMM_TYPE_MEMBUF_POS`: Position/offset within a memory buffer
+
+**Stack Variable Reference Encoding:**
+
+When `IMM_TYPE_STACK_VAR_REF` is used, the immediate value is interpreted as a `stack_var_ref_t` structure:
 
 ```c
 typedef struct {
-    uint16_t opcode;   /* Operation code */
-    uint16_t us1;      /* Unsigned short immediate 1 */
-    uint16_t us2;      /* Unsigned short immediate 2 */
-    int32_t i1;        /* Signed integer immediate 1 */
-    int32_t i2;        /* Signed integer immediate 2 */
-    uint32_t ui1;      /* Unsigned integer immediate 1 */
-    uint32_t ui2;      /* Unsigned integer immediate 2 */
-    float f1;          /* Float immediate 1 */
-    float f2;          /* Float immediate 2 */
-} instruction_t;
+    uint16_t frame_idx; /* Stack frame index (0-31) */
+    uint16_t var_idx;   /* Variable index inside the stack frame (0-15 for stack_vars, 0-63 for locals) */
+} stack_var_ref_t;
 ```
 
-**Field Usage by Operation Type:**
-- **opcode**: Operation identifier (0-65535)
-- **us1, us2**: Used for register selection, variable indices (0-255 range)
-- **i1, i2**: Signed integer operands or offsets
-- **ui1, ui2**: Unsigned integer operands, addresses, or for bitwise operations
-- **f1, f2**: Floating-point operands
+This allows instructions to reference:
+- **Stack variables in other frames**: `{frame_idx=1, var_idx=0}` refers to `stack_frames[1].stack_vars[0]`
+- **Local variables**: When using special encoding or separate opcodes
+- **Return value**: The `ret_val` field requires special handling as it's not part of the indexed arrays
 
-**MISRA-C Compliance Note**: Per MISRA-C requirements, bitwise and shift operations are only performed on unsigned types (us1, us2, ui1, ui2). Signed integer types (i1, i2) are not used for bitwise operations.
-
-##### 3.2.2 Registers
-
-The VM provides general-purpose and special-purpose registers:
-
-```c
-/* General-purpose signed integer registers */
-int32_t A;   /* Accumulator, commonly used for signed integer math */
-int32_t B, C, D;   /* General purpose signed integers */
-
-/* General-purpose unsigned integer registers */
-uint32_t F;  /* Flags register for overflow, carry, etc. */
-uint32_t G, H;  /* General purpose unsigned integers */
-
-/* General-purpose float registers */
-float J, K;  /* General purpose floats */
-
-/* Special-purpose registers */
-uint16_t SP;  /* Stack pointer (current frame level 0-15) */
-uint32_t PC;  /* Program counter (address of next instruction) */
-```
-
-**Register Usage Guidelines:**
-- **us1** field typically specifies which register to use (0=A, 1=B, 2=C, etc.)
-- Signed arithmetic uses A, B, C, D registers
-- Unsigned and bitwise operations use F, G, H registers
-- Float operations use J, K registers
-
-##### 3.2.3 Global Storage
-
-```c
-/* Global signed integer variables */
-int32_t intval[256];
-
-/* Global unsigned integer variables */
-uint32_t uintval[256];
-
-/* Global string storage pool */
-#define STRVAL_LEN 128  /* Maximum 128 strings (indices 0-127); uint8_t type is sufficient */
-char strval[STRVAL_LEN][256];
-
-/* Global string variable indices (which string each global string variable references) */
-uint8_t strval_idx[256];  /* Indices into strval for global string variables */
-
-/* Global float variables */
-float floatval[256];
-```
+Note: In the examples below, stack_var_ref values are shown in pseudo-notation as `{frame=F, var=V}` for clarity. The actual encoding packs both values into a 32-bit immediate field.
 
 ##### 3.2.4 Stack Structure
 
-The VM uses pre-allocated stack frames with a maximum depth of 16. Each frame has dedicated storage for local variables and parameter passing.
+The VM uses pre-allocated stack frames with a maximum depth of 32. Each frame contains stack variables, local variables, and a return value slot for function calls.
 
 ```c
-#define STACK_DEPTH 16      /* Maximum 16 nested function calls */
-#define STACK_VAR_COUNT 16  /* Each frame has 16 slots for variables */
+#define STACK_DEPTH 32           /* Maximum 32 nested function calls */
+#define STACK_VAR_COUNT 16       /* Each frame has 16 slots for parameters/temp values */
+#define STACK_LOCALS_COUNT 64    /* Maximum 64 local variables per frame */
 
-/* Stack variable type identifiers */
-typedef enum {
-    SV_INT,              /* Signed integer value */
-    SV_UINT,             /* Unsigned integer value */
-    SV_FLOAT,            /* Float value */
-    SV_GLOBAL_INT_IDX,   /* Reference to global signed int (index in us1) */
-    SV_GLOBAL_UINT_IDX,  /* Reference to global unsigned int (index in us1) */
-    SV_GLOBAL_FLOAT_IDX, /* Reference to global float (index in us1) */
-    SV_GLOBAL_STR_IDX,   /* Reference to global string (index in us1) */
-    SV_STACK_INT_IDX,    /* Reference to stack int (frame level in us1, var index in us2) */
-    SV_STACK_UINT_IDX,   /* Reference to stack uint (frame level in us1, var index in us2) */
-    SV_STACK_FLOAT_IDX,  /* Reference to stack float (frame level in us1, var index in us2) */
-    SV_STACK_STR_IDX     /* Reference to stack string (frame level in us1, var index in us2) */
-} stack_variable_type_t;
-
-/* Stack variable can hold a value or reference */
 typedef struct {
-    stack_variable_type_t type;
-    uint16_t us1;   /* Used for indices and frame levels */
-    uint16_t us2;   /* Used for variable indices within frames */
-    int32_t i32;    /* Signed integer value */
-    uint32_t u32;   /* Unsigned integer value */
-    float f32;      /* Float value */
-} stack_variable_t;
+    uint16_t frame_idx; /* Stack frame index */
+    uint16_t var_idx;   /* Variable index inside the stack frame */
+} stack_var_ref_t;
 
 /* Complete stack frame structure */
 typedef struct {
-    stack_variable_t vars[STACK_VAR_COUNT];  /* Variables for this frame */
-    int32_t int_locals[STACK_VAR_COUNT];     /* Local signed integers */
-    uint32_t uint_locals[STACK_VAR_COUNT];   /* Local unsigned integers */
-    float float_locals[STACK_VAR_COUNT];     /* Local floats */
-    uint8_t str_locals[STACK_VAR_COUNT];     /* Local string indices */
-    uint32_t return_addr;                    /* Return address (PC) */
+    var_value_t stack_vars[STACK_VAR_COUNT];  /* Variables for parameter passing */
+    var_value_t locals[STACK_LOCALS_COUNT];   /* Local variables */
+    var_value_t ret_val;                      /* Return value */
+    uint32_t return_addr;                     /* Return address (PC) */
 } stack_frame_t;
 
 /* Stack frame array */
 stack_frame_t stack_frames[STACK_DEPTH];
 ```
 
-**Stack Frame Usage:**
-- **vars[]**: Used for passing parameters and return values between caller/callee (preserved during CALL to maintain parameters set by PUSH_PARAM_* opcodes)
-- **int_locals[], uint_locals[], float_locals[], str_locals[]**: Frame-local variable storage (zeroed on CALL)
-- **return_addr**: Saved PC for function return (set on CALL)
-- Frames are pre-allocated; SP indicates current frame level (0-15)
-- When calling a function, caller uses PUSH_PARAM_* opcodes to push values/references into `vars[]` of the next frame level (with bounds check for SP+1)
-- Callee accesses parameters from its own `vars[]` and uses `*_locals[]` for local variables
-- On return, callee places return values in its own `vars[]` for caller to retrieve
+**Stack Frame Components:**
 
-### 4. Opcode Table
+- **stack_vars[]**: Used for passing parameters to functions and receiving return values
+  - When calling a function, the caller writes parameter values into the callee's stack_vars[]
+  - Each stack_var is a full var_value_t with type tag, supporting all data types
+  - Maximum 16 stack variables per frame
+  - These variables are preserved across CALL operations
 
-The opcodes are organized into categories based on operation type and operand addressing mode.
+- **locals[]**: Frame-local variable storage
+  - Used for function local variables that persist throughout the function execution
+  - Each local is a full var_value_t with type tag
+  - Maximum 64 local variables per frame
+  - Locals are typically zeroed when entering a function
+
+- **ret_val**: Return value from the function
+  - Single var_value_t to hold the function's return value
+  - The callee sets this before returning
+  - The caller reads this after the function returns
+  - Supports all data types through the type tag
+
+- **return_addr**: Saved program counter
+  - Stores the PC value to return to after RET instruction
+  - Set automatically by CALL instruction
+
+### 4. Instruction Set
+
+The opcodes are organized into categories based on operation type. Instructions use the most appropriate size (tiny, small, medium, or large) based on their operand requirements.
 
 #### 4.1 Opcode Naming Convention
 
-- **Suffix `_I`**: Immediate operand (value in opcode)
-- **Suffix `_R`**: Register operand (register specified by us1)
-- **Suffix `_G`**: Global variable operand (index in us1 or us2)
-- **Suffix `_L`**: Local/stack variable operand (index in us1 or us2)
-- **Suffix `_V`**: Stack variable operand (from vars[] array)
+- **Prefix indicates operation type**: LOAD, STORE, ADD, SUB, MUL, DIV, CMP, JMP, etc.
+- **Suffix `_G`**: Operates on global variable
+- **Suffix `_L`**: Operates on local variable
+- **Suffix `_S`**: Operates on stack variable
+- **Suffix `_B`**: Operates on memory buffer
+- **Suffix `_I`**: Uses immediate value
 
 #### 4.2 Control Flow Operations
 
-| Opcode | Name | Description | Operands |
-|--------|------|-------------|----------|
-| 0x0000 | NOP | No operation | - |
-| 0x0001 | HALT | Stop execution | - |
-| 0x0002 | JMP | Unconditional jump | ui1 = target PC |
-| 0x0003 | JZ | Jump if zero flag set | ui1 = target PC |
-| 0x0004 | JNZ | Jump if zero flag clear | ui1 = target PC |
-| 0x0005 | JL | Jump if less flag set | ui1 = target PC |
-| 0x0006 | JG | Jump if greater flag set | ui1 = target PC |
-| 0x0007 | JLE | Jump if less or equal | ui1 = target PC |
-| 0x0008 | JGE | Jump if greater or equal | ui1 = target PC |
-| 0x0009 | CALL | Call subroutine | ui1 = target PC |
-| 0x000A | RET | Return from subroutine | - |
+All control flow operations are **tiny instructions** (4 bytes) except CALL and JMP which are **small instructions** (8 bytes) due to the address operand.
 
-#### 4.3 Signed Integer Operations
+| Opcode | Name | Size | Description | Operands |
+|--------|------|------|-------------|----------|
+| 0x00 | NOP | Tiny | No operation | - |
+| 0x01 | HALT | Tiny | Stop execution | - |
+| 0x02 | JMP | Small | Unconditional jump | imm1 = target PC (uint) |
+| 0x03 | JZ | Small | Jump if zero | imm1 = target PC (uint) |
+| 0x04 | JNZ | Small | Jump if not zero | imm1 = target PC (uint) |
+| 0x05 | JLT | Small | Jump if less than | imm1 = target PC (uint) |
+| 0x06 | JGT | Small | Jump if greater than | imm1 = target PC (uint) |
+| 0x07 | JLE | Small | Jump if less or equal | imm1 = target PC (uint) |
+| 0x08 | JGE | Small | Jump if greater or equal | imm1 = target PC (uint) |
+| 0x09 | CALL | Small | Call subroutine | imm1 = target PC (uint) |
+| 0x0A | RET | Tiny | Return from subroutine | - |
 
-##### 4.3.1 Signed Integer Load/Store Operations
+#### 4.3 Variable Load/Store Operations
 
-| Opcode | Name | Description | Operands |
-|--------|------|-------------|----------|
-| 0x0010 | LOADI_I | Load immediate to register | us1 = reg (0-3 for A-D), i1 = value |
-| 0x0011 | LOADI_G | Load global integer to register | us1 = reg, us2 = global index |
-| 0x0012 | LOADI_L | Load local integer to register | us1 = reg, us2 = local index |
-| 0x0013 | STOREI_G | Store register to global integer | us1 = reg, us2 = global index |
-| 0x0014 | STOREI_L | Store register to local integer | us1 = reg, us2 = local index |
-| 0x0015 | MOVI_R | Move between integer registers | us1 = dest reg, us2 = src reg |
+##### 4.3.1 Load Operations
 
-##### 4.3.2 Signed Integer Arithmetic Operations
+| Opcode | Name | Size | Description | Operands |
+|--------|------|------|-------------|----------|
+| 0x10 | LOAD_G | Small | Load global variable to stack var | operand = stack var slot, imm1 = global idx |
+| 0x11 | LOAD_L | Small | Load local variable to stack var | operand = stack var slot, imm1 = local idx |
+| 0x12 | LOAD_S | Small | Load from another frame's stack var | operand = dest slot, imm1 = stack_var_ref {frame, var} |
+| 0x13 | LOAD_I_I32 | Small | Load immediate int32 to stack var | operand = stack var slot, imm1 = value (int) |
+| 0x14 | LOAD_I_U32 | Small | Load immediate uint32 to stack var | operand = stack var slot, imm1 = value (uint) |
+| 0x15 | LOAD_I_F32 | Small | Load immediate float to stack var | operand = stack var slot, imm1 = value (float) |
+| 0x16 | LOAD_RET | Small | Load return value from frame | operand = dest stack var slot, imm1 = frame idx |
 
-| Opcode | Name | Description | Operands |
-|--------|------|-------------|----------|
-| 0x0020 | ADDI_I | Add immediate to register | us1 = reg, i1 = value |
-| 0x0021 | ADDI_R | Add two registers | us1 = dest, us2 = src1, i1 = src2 reg |
-| 0x0022 | SUBI_I | Subtract immediate from register | us1 = reg, i1 = value |
-| 0x0023 | SUBI_R | Subtract registers | us1 = dest, us2 = src1, i1 = src2 reg |
-| 0x0024 | MULI_I | Multiply register by immediate | us1 = reg, i1 = value |
-| 0x0025 | MULI_R | Multiply registers | us1 = dest, us2 = src1, i1 = src2 reg |
-| 0x0026 | DIVI_I | Divide register by immediate | us1 = reg, i1 = value |
-| 0x0027 | DIVI_R | Divide registers | us1 = dest, us2 = src1, i1 = src2 reg |
-| 0x0028 | MODI_I | Modulo register by immediate | us1 = reg, i1 = value |
-| 0x0029 | MODI_R | Modulo registers | us1 = dest, us2 = src1, i1 = src2 reg |
-| 0x002A | NEGI | Negate integer register | us1 = reg |
-| 0x002B | INCI_G | Increment global integer | us1 = global index |
-| 0x002C | DECI_G | Decrement global integer | us1 = global index |
-| 0x002D | INCI_R | Increment register | us1 = reg |
-| 0x002E | DECI_R | Decrement register | us1 = reg |
+##### 4.3.2 Store Operations
 
-##### 4.3.3 Signed Integer Comparison Operations
+| Opcode | Name | Size | Description | Operands |
+|--------|------|------|-------------|----------|
+| 0x20 | STORE_G | Small | Store stack var to global variable | operand = stack var slot, imm1 = global idx |
+| 0x21 | STORE_L | Small | Store stack var to local variable | operand = stack var slot, imm1 = local idx |
+| 0x22 | STORE_S | Small | Store to another frame's stack var | operand = src slot, imm1 = stack_var_ref {frame, var} |
+| 0x23 | STORE_RET | Small | Store to return value of frame | operand = src stack var slot, imm1 = frame idx |
 
-| Opcode | Name | Description | Operands |
-|--------|------|-------------|----------|
-| 0x0030 | CMPI_I | Compare register with immediate | us1 = reg, i1 = value |
-| 0x0031 | CMPI_R | Compare two registers | us1 = reg1, us2 = reg2 |
-| 0x0032 | CMPI_G | Compare register with global | us1 = reg, us2 = global index |
+#### 4.4 Arithmetic Operations
 
-#### 4.4 Unsigned Integer Operations
+All arithmetic operations work on stack variables and store results in stack variables. They are **medium instructions** (12 bytes) with two operands.
 
-##### 4.4.1 Unsigned Integer Load/Store Operations
+##### 4.4.1 Integer Arithmetic
 
-| Opcode | Name | Description | Operands |
-|--------|------|-------------|----------|
-| 0x0040 | LOADU_I | Load immediate to unsigned register | us1 = reg (0-2 for F-H), ui1 = value |
-| 0x0041 | LOADU_G | Load global unsigned to register | us1 = reg, us2 = global index |
-| 0x0042 | LOADU_L | Load local unsigned to register | us1 = reg, us2 = local index |
-| 0x0043 | STOREU_G | Store register to global unsigned | us1 = reg, us2 = global index |
-| 0x0044 | STOREU_L | Store register to local unsigned | us1 = reg, us2 = local index |
-| 0x0045 | MOVU_R | Move between unsigned registers | us1 = dest reg, us2 = src reg |
+| Opcode | Name | Size | Description | Operands |
+|--------|------|------|-------------|----------|
+| 0x30 | ADD_I32 | Medium | Add signed integers | operand = dest slot, imm1 = src1 slot, imm2 = src2 slot |
+| 0x31 | SUB_I32 | Medium | Subtract signed integers | operand = dest slot, imm1 = src1 slot, imm2 = src2 slot |
+| 0x32 | MUL_I32 | Medium | Multiply signed integers | operand = dest slot, imm1 = src1 slot, imm2 = src2 slot |
+| 0x33 | DIV_I32 | Medium | Divide signed integers | operand = dest slot, imm1 = src1 slot, imm2 = src2 slot |
+| 0x34 | MOD_I32 | Medium | Modulo signed integers | operand = dest slot, imm1 = src1 slot, imm2 = src2 slot |
+| 0x35 | NEG_I32 | Small | Negate signed integer | operand = dest slot, imm1 = src slot |
+| 0x36 | ADD_U32 | Medium | Add unsigned integers | operand = dest slot, imm1 = src1 slot, imm2 = src2 slot |
+| 0x37 | SUB_U32 | Medium | Subtract unsigned integers | operand = dest slot, imm1 = src1 slot, imm2 = src2 slot |
+| 0x38 | MUL_U32 | Medium | Multiply unsigned integers | operand = dest slot, imm1 = src1 slot, imm2 = src2 slot |
+| 0x39 | DIV_U32 | Medium | Divide unsigned integers | operand = dest slot, imm1 = src1 slot, imm2 = src2 slot |
+| 0x3A | MOD_U32 | Medium | Modulo unsigned integers | operand = dest slot, imm1 = src1 slot, imm2 = src2 slot |
 
-##### 4.4.2 Unsigned Integer Arithmetic Operations
+##### 4.4.2 Float Arithmetic
 
-| Opcode | Name | Description | Operands |
-|--------|------|-------------|----------|
-| 0x0050 | ADDU_I | Add immediate to unsigned register | us1 = reg, ui1 = value |
-| 0x0051 | ADDU_R | Add unsigned registers | us1 = dest, us2 = src1, i1 = src2 reg |
-| 0x0052 | SUBU_I | Subtract immediate from unsigned register | us1 = reg, ui1 = value |
-| 0x0053 | SUBU_R | Subtract unsigned registers | us1 = dest, us2 = src1, i1 = src2 reg |
-| 0x0054 | MULU_I | Multiply unsigned register by immediate | us1 = reg, ui1 = value |
-| 0x0055 | MULU_R | Multiply unsigned registers | us1 = dest, us2 = src1, i1 = src2 reg |
-| 0x0056 | DIVU_I | Divide unsigned register by immediate | us1 = reg, ui1 = value |
-| 0x0057 | DIVU_R | Divide unsigned registers | us1 = dest, us2 = src1, i1 = src2 reg |
-| 0x0058 | MODU_I | Modulo unsigned register by immediate | us1 = reg, ui1 = value |
-| 0x0059 | MODU_R | Modulo unsigned registers | us1 = dest, us2 = src1, i1 = src2 reg |
-| 0x005A | INCU_G | Increment global unsigned | us1 = global index |
-| 0x005B | DECU_G | Decrement global unsigned | us1 = global index |
-| 0x005C | INCU_R | Increment unsigned register | us1 = reg |
-| 0x005D | DECU_R | Decrement unsigned register | us1 = reg |
+| Opcode | Name | Size | Description | Operands |
+|--------|------|------|-------------|----------|
+| 0x40 | ADD_F32 | Medium | Add floats | operand = dest slot, imm1 = src1 slot, imm2 = src2 slot |
+| 0x41 | SUB_F32 | Medium | Subtract floats | operand = dest slot, imm1 = src1 slot, imm2 = src2 slot |
+| 0x42 | MUL_F32 | Medium | Multiply floats | operand = dest slot, imm1 = src1 slot, imm2 = src2 slot |
+| 0x43 | DIV_F32 | Medium | Divide floats | operand = dest slot, imm1 = src1 slot, imm2 = src2 slot |
+| 0x44 | NEG_F32 | Small | Negate float | operand = dest slot, imm1 = src slot |
+| 0x45 | ABS_F32 | Small | Absolute value of float | operand = dest slot, imm1 = src slot |
+| 0x46 | SQRT_F32 | Small | Square root of float | operand = dest slot, imm1 = src slot |
 
-##### 4.4.3 Unsigned Integer Bitwise Operations (MISRA-C Compliant)
+#### 4.5 Bitwise Operations (Unsigned Only - MISRA-C Compliant)
 
-| Opcode | Name | Description | Operands |
-|--------|------|-------------|----------|
-| 0x0060 | ANDU_I | Bitwise AND with immediate | us1 = reg, ui1 = value |
-| 0x0061 | ANDU_R | Bitwise AND registers | us1 = dest, us2 = src1, i1 = src2 reg |
-| 0x0062 | ORU_I | Bitwise OR with immediate | us1 = reg, ui1 = value |
-| 0x0063 | ORU_R | Bitwise OR registers | us1 = dest, us2 = src1, i1 = src2 reg |
-| 0x0064 | XORU_I | Bitwise XOR with immediate | us1 = reg, ui1 = value |
-| 0x0065 | XORU_R | Bitwise XOR registers | us1 = dest, us2 = src1, i1 = src2 reg |
-| 0x0066 | NOTU | Bitwise NOT register | us1 = reg |
-| 0x0067 | SHLU_I | Shift left by immediate | us1 = reg, us2 = shift count (unsigned) |
-| 0x0068 | SHRU_I | Logical shift right by immediate | us1 = reg, us2 = shift count (unsigned) |
-| 0x0069 | SHLU_R | Shift left by register | us1 = dest, us2 = value reg, i1 = shift reg |
-| 0x006A | SHRU_R | Logical shift right by register | us1 = dest, us2 = value reg, i1 = shift reg |
+Per MISRA-C Rule 10.1, bitwise operations are only performed on unsigned types. All are **medium instructions** (12 bytes).
 
-##### 4.4.4 Unsigned Integer Comparison Operations
+| Opcode | Name | Size | Description | Operands |
+|--------|------|------|-------------|----------|
+| 0x50 | AND_U32 | Medium | Bitwise AND | operand = dest slot, imm1 = src1 slot, imm2 = src2 slot |
+| 0x51 | OR_U32 | Medium | Bitwise OR | operand = dest slot, imm1 = src1 slot, imm2 = src2 slot |
+| 0x52 | XOR_U32 | Medium | Bitwise XOR | operand = dest slot, imm1 = src1 slot, imm2 = src2 slot |
+| 0x53 | NOT_U32 | Small | Bitwise NOT | operand = dest slot, imm1 = src slot |
+| 0x54 | SHL_U32 | Medium | Shift left | operand = dest slot, imm1 = value slot, imm2 = shift count slot |
+| 0x55 | SHR_U32 | Medium | Logical shift right | operand = dest slot, imm1 = value slot, imm2 = shift count slot |
 
-| Opcode | Name | Description | Operands |
-|--------|------|-------------|----------|
-| 0x0070 | CMPU_I | Compare unsigned register with immediate | us1 = reg, ui1 = value |
-| 0x0071 | CMPU_R | Compare two unsigned registers | us1 = reg1, us2 = reg2 |
-| 0x0072 | CMPU_G | Compare unsigned register with global | us1 = reg, us2 = global index |
-| 0x0073 | TSTU_I | Test (AND) unsigned register with immediate | us1 = reg, ui1 = value |
-| 0x0074 | TSTU_R | Test (AND) two unsigned registers | us1 = reg1, us2 = reg2 |
+#### 4.6 Comparison Operations
 
-#### 4.5 Float Operations
+Comparison operations set condition flags and can also store boolean results. They are **medium instructions** (12 bytes).
 
-##### 4.5.1 Float Load/Store Operations
-
-| Opcode | Name | Description | Operands |
-|--------|------|-------------|----------|
-| 0x0080 | LOADF_I | Load immediate float to register | us1 = reg (0-1 for J-K), f1 = value |
-| 0x0081 | LOADF_G | Load global float to register | us1 = reg, us2 = global index |
-| 0x0082 | LOADF_L | Load local float to register | us1 = reg, us2 = local index |
-| 0x0083 | STOREF_G | Store register to global float | us1 = reg, us2 = global index |
-| 0x0084 | STOREF_L | Store register to local float | us1 = reg, us2 = local index |
-| 0x0085 | MOVF_R | Move between float registers | us1 = dest reg, us2 = src reg |
-
-##### 4.5.2 Float Arithmetic Operations
-
-| Opcode | Name | Description | Operands |
-|--------|------|-------------|----------|
-| 0x0090 | ADDF_I | Add immediate to float register | us1 = reg, f1 = value |
-| 0x0091 | ADDF_R | Add float registers | us1 = dest, us2 = src1, i1 = src2 reg |
-| 0x0092 | SUBF_I | Subtract immediate from float register | us1 = reg, f1 = value |
-| 0x0093 | SUBF_R | Subtract float registers | us1 = dest, us2 = src1, i1 = src2 reg |
-| 0x0094 | MULF_I | Multiply float register by immediate | us1 = reg, f1 = value |
-| 0x0095 | MULF_R | Multiply float registers | us1 = dest, us2 = src1, i1 = src2 reg |
-| 0x0096 | DIVF_I | Divide float register by immediate | us1 = reg, f1 = value |
-| 0x0097 | DIVF_R | Divide float registers | us1 = dest, us2 = src1, i1 = src2 reg |
-| 0x0098 | NEGF | Negate float register | us1 = reg |
-| 0x0099 | ABSF | Absolute value of float register | us1 = reg |
-| 0x009A | SQRTF | Square root of float register | us1 = reg |
-
-##### 4.5.3 Float Comparison Operations
-
-| Opcode | Name | Description | Operands |
-|--------|------|-------------|----------|
-| 0x00A0 | CMPF_I | Compare float register with immediate | us1 = reg, f1 = value |
-| 0x00A1 | CMPF_R | Compare two float registers | us1 = reg1, us2 = reg2 |
-| 0x00A2 | CMPF_G | Compare float register with global | us1 = reg, us2 = global index |
-
-#### 4.6 String Operations
-
-##### 4.6.1 String Load/Store Operations
-
-| Opcode | Name | Description | Operands |
-|--------|------|-------------|----------|
-| 0x00B0 | LOADS_I | Load string index immediate to local | us1 = local var index, us2 = string pool index |
-| 0x00B1 | LOADS_G | Load global string index to local | us1 = local var index, us2 = global str var index |
-| 0x00B2 | LOADS_L | Copy local string index | us1 = dest local idx, us2 = src local idx |
-| 0x00B3 | STORES_G | Store local string index to global | us1 = local var index, us2 = global str var index |
-
-##### 4.6.2 String Manipulation Operations
-
-| Opcode | Name | Description | Operands |
-|--------|------|-------------|----------|
-| 0x00C0 | CATS | Concatenate two strings | us1 = dest pool idx, us2 = src1 pool idx, i1 = src2 pool idx |
-| 0x00C1 | COPYS | Copy string | us1 = dest pool idx, us2 = src pool idx |
-| 0x00C2 | LENS | Get string length | us1 = src pool idx, us2 = dest int reg (0-3) |
-| 0x00C3 | SUBS | Substring | us1 = dest pool idx, us2 = src pool idx, ui1 = start pos, ui2 = length |
-| 0x00C4 | CLRS | Clear string | us1 = pool idx |
-| 0x00C5 | CHRS | Get character at index | us1 = string pool idx, ui1 = char idx, us2 = dest int reg |
-| 0x00C6 | SETCHRS | Set character at index | us1 = string pool idx, ui1 = char idx, i1 = char value |
-
-##### 4.6.3 String Comparison Operations
-
-| Opcode | Name | Description | Operands |
-|--------|------|-------------|----------|
-| 0x00D0 | CMPS | Compare two strings | us1 = string pool idx 1, us2 = string pool idx 2 |
-| 0x00D1 | FINDS | Find substring | us1 = haystack pool idx, us2 = needle pool idx, i1 = dest int reg |
-
-##### 4.6.4 String Conversion Operations
-
-| Opcode | Name | Description | Operands |
-|--------|------|-------------|----------|
-| 0x00E0 | STOI | String to signed integer | us1 = string pool idx, us2 = dest int reg (0-3) |
-| 0x00E1 | STOU | String to unsigned integer | us1 = string pool idx, us2 = dest uint reg (0-2) |
-| 0x00E2 | STOF | String to float | us1 = string pool idx, us2 = dest float reg (0-1) |
-| 0x00E3 | ITOS | Signed integer to string | us1 = src int reg, us2 = dest string pool idx |
-| 0x00E4 | UTOS | Unsigned integer to string | us1 = src uint reg, us2 = dest string pool idx |
-| 0x00E5 | FTOS | Float to string | us1 = src float reg, us2 = dest string pool idx |
+| Opcode | Name | Size | Description | Operands |
+|--------|------|------|-------------|----------|
+| 0x60 | CMP_I32 | Medium | Compare signed integers | operand = flags, imm1 = src1 slot, imm2 = src2 slot |
+| 0x61 | CMP_U32 | Medium | Compare unsigned integers | operand = flags, imm1 = src1 slot, imm2 = src2 slot |
+| 0x62 | CMP_F32 | Medium | Compare floats | operand = flags, imm1 = src1 slot, imm2 = src2 slot |
 
 #### 4.7 Type Conversion Operations
 
-| Opcode | Name | Description | Operands |
-|--------|------|-------------|----------|
-| 0x00F0 | ITOF | Convert signed integer to float | us1 = src int reg (0-3), us2 = dest float reg (0-1) |
-| 0x00F1 | ITOU | Convert signed integer to unsigned | us1 = src int reg (0-3), us2 = dest uint reg (0-2) |
-| 0x00F2 | UTOI | Convert unsigned to signed integer | us1 = src uint reg (0-2), us2 = dest int reg (0-3) |
-| 0x00F3 | UTOF | Convert unsigned integer to float | us1 = src uint reg (0-2), us2 = dest float reg (0-1) |
-| 0x00F4 | FTOI | Convert float to signed integer (truncate) | us1 = src float reg (0-1), us2 = dest int reg (0-3) |
-| 0x00F5 | FTOI_R | Convert float to signed integer (round) | us1 = src float reg (0-1), us2 = dest int reg (0-3) |
-| 0x00F6 | FTOU | Convert float to unsigned integer | us1 = src float reg (0-1), us2 = dest uint reg (0-2) |
+Type conversion operations are **small instructions** (8 bytes).
 
-#### 4.8 Stack Variable Operations
+| Opcode | Name | Size | Description | Operands |
+|--------|------|------|-------------|----------|
+| 0x70 | I32_TO_U32 | Small | Convert signed to unsigned int | operand = dest slot, imm1 = src slot |
+| 0x71 | U32_TO_I32 | Small | Convert unsigned to signed int | operand = dest slot, imm1 = src slot |
+| 0x72 | I32_TO_F32 | Small | Convert signed int to float | operand = dest slot, imm1 = src slot |
+| 0x73 | U32_TO_F32 | Small | Convert unsigned int to float | operand = dest slot, imm1 = src slot |
+| 0x74 | F32_TO_I32 | Small | Convert float to signed int (truncate) | operand = dest slot, imm1 = src slot |
+| 0x75 | F32_TO_U32 | Small | Convert float to unsigned int (truncate) | operand = dest slot, imm1 = src slot |
 
-##### 4.8.1 Stack Variable Push/Pop Operations
+#### 4.8 Memory Buffer Operations
 
-| Opcode | Name | Description | Operands |
-|--------|------|-------------|----------|
-| 0x0100 | PUSHV_I | Push immediate signed integer value to current frame's stack var | us1 = var slot, i1 = value |
-| 0x0101 | PUSHV_U | Push immediate unsigned integer value to current frame's stack var | us1 = var slot, ui1 = value |
-| 0x0102 | PUSHV_F | Push immediate float value to current frame's stack var | us1 = var slot, f1 = value |
-| 0x0103 | PUSHV_GREF_I | Push global int reference to current frame's stack var | us1 = var slot, us2 = global idx |
-| 0x0104 | PUSHV_GREF_U | Push global uint reference to current frame's stack var | us1 = var slot, us2 = global idx |
-| 0x0105 | PUSHV_GREF_F | Push global float reference to current frame's stack var | us1 = var slot, us2 = global idx |
-| 0x0106 | PUSHV_GREF_S | Push global string reference to current frame's stack var | us1 = var slot, us2 = global idx |
-| 0x0107 | PUSHV_R_I | Push signed integer register value to current frame's stack var | us1 = var slot, us2 = src int reg (0-3) |
-| 0x0108 | PUSHV_R_U | Push unsigned integer register value to current frame's stack var | us1 = var slot, us2 = src uint reg (0-2) |
-| 0x0109 | PUSHV_R_F | Push float register value to current frame's stack var | us1 = var slot, us2 = src float reg (0-1) |
-| 0x010A | PUSH_PARAM_I | Push immediate signed integer value to next frame's stack var (for params) | us1 = var slot, i1 = value |
-| 0x010B | PUSH_PARAM_U | Push immediate unsigned integer value to next frame's stack var (for params) | us1 = var slot, ui1 = value |
-| 0x010C | PUSH_PARAM_F | Push immediate float value to next frame's stack var (for params) | us1 = var slot, f1 = value |
-| 0x010D | PUSH_PARAM_GREF_I | Push global int reference to next frame's stack var (for params) | us1 = var slot, us2 = global idx |
-| 0x010E | PUSH_PARAM_GREF_U | Push global uint reference to next frame's stack var (for params) | us1 = var slot, us2 = global idx |
-| 0x010F | PUSH_PARAM_GREF_F | Push global float reference to next frame's stack var (for params) | us1 = var slot, us2 = global idx |
-| 0x0110 | PUSH_PARAM_GREF_S | Push global string reference to next frame's stack var (for params) | us1 = var slot, us2 = global idx |
-| 0x0111 | PUSH_RETURN_I | Push immediate signed integer value to previous frame's stack var (for returns) | us1 = var slot, i1 = value |
-| 0x0112 | PUSH_RETURN_U | Push immediate unsigned integer value to previous frame's stack var (for returns) | us1 = var slot, ui1 = value |
-| 0x0113 | PUSH_RETURN_F | Push immediate float value to previous frame's stack var (for returns) | us1 = var slot, f1 = value |
-| 0x0114 | PUSH_RETURN_R_I | Push signed integer register value to previous frame's stack var (for returns) | us1 = var slot, us2 = src int reg (0-3) |
-| 0x0115 | PUSH_RETURN_R_U | Push unsigned integer register value to previous frame's stack var (for returns) | us1 = var slot, us2 = src uint reg (0-2) |
-| 0x0116 | PUSH_RETURN_R_F | Push float register value to previous frame's stack var (for returns) | us1 = var slot, us2 = src float reg (0-1) |
-| 0x0117 | POPV_I | Pop signed integer value from current frame's stack var to register | us1 = var slot, us2 = dest int reg |
-| 0x0118 | POPV_U | Pop unsigned integer value from current frame's stack var to register | us1 = var slot, us2 = dest uint reg |
-| 0x0119 | POPV_F | Pop float value from current frame's stack var to register | us1 = var slot, us2 = dest float reg |
+Operations on memory buffers for array and string manipulation.
+
+##### 4.8.1 Buffer Access
+
+| Opcode | Name | Size | Description | Operands |
+|--------|------|------|-------------|----------|
+| 0x80 | BUF_READ | Medium | Read from buffer to stack var | operand = dest slot, imm1 = buf idx, imm2 = position |
+| 0x81 | BUF_WRITE | Medium | Write stack var to buffer | operand = src slot, imm1 = buf idx, imm2 = position |
+| 0x82 | BUF_LEN | Small | Get buffer element count | operand = dest slot, imm1 = buf idx |
+| 0x83 | BUF_CLEAR | Small | Clear buffer | operand unused, imm1 = buf idx |
+
+##### 4.8.2 String Operations
+
+| Opcode | Name | Size | Description | Operands |
+|--------|------|------|-------------|----------|
+| 0x90 | STR_CAT | Medium | Concatenate strings | operand = dest buf, imm1 = src1 buf, imm2 = src2 buf |
+| 0x91 | STR_COPY | Medium | Copy string | operand = dest buf, imm1 = src buf |
+| 0x92 | STR_LEN | Small | Get string length | operand = dest slot, imm1 = buf idx |
+| 0x93 | STR_CMP | Medium | Compare strings | operand = flags, imm1 = buf1 idx, imm2 = buf2 idx |
+| 0x94 | STR_CHR | Medium | Get character at index | operand = dest slot, imm1 = buf idx, imm2 = position |
+| 0x95 | STR_SET_CHR | Large | Set character at index | operand unused, imm1 = buf idx, imm2 = position, imm3 = char value |
 
 #### 4.9 I/O Operations
 
-| Opcode | Name | Description | Operands |
-|--------|------|-------------|----------|
-| 0x011A | PRINTI | Print signed integer from register | us1 = int reg (0-3) |
-| 0x011B | PRINTU | Print unsigned integer from register | us1 = uint reg (0-2) |
-| 0x011C | PRINTF | Print float from register | us1 = float reg (0-1) |
-| 0x011D | PRINTS | Print string | us1 = string pool idx |
-| 0x011E | PRINTLN | Print newline | - |
-| 0x011F | READI | Read signed integer to register | us1 = dest int reg (0-3) |
-| 0x0120 | READU | Read unsigned integer to register | us1 = dest uint reg (0-2) |
-| 0x0121 | READF | Read float to register | us1 = dest float reg (0-1) |
-| 0x0122 | READS | Read string to pool | us1 = dest string pool idx |
+I/O operations are **small instructions** (8 bytes).
 
-#### 4.10 Memory and System Operations
-
-| Opcode | Name | Description | Operands |
-|--------|------|-------------|----------|
-| 0x0123 | CLEARI_G | Clear global signed integer | us1 = global idx |
-| 0x0124 | CLEARU_G | Clear global unsigned integer | us1 = global idx |
-| 0x0125 | CLEARF_G | Clear global float | us1 = global idx |
-| 0x0126 | CLEARS_G | Clear global string reference | us1 = global idx |
-| 0x0127 | CLEARV | Clear stack variable slot | us1 = var slot |
+| Opcode | Name | Size | Description | Operands |
+|--------|------|------|-------------|----------|
+| 0xA0 | PRINT_I32 | Small | Print signed integer | operand unused, imm1 = stack var slot |
+| 0xA1 | PRINT_U32 | Small | Print unsigned integer | operand unused, imm1 = stack var slot |
+| 0xA2 | PRINT_F32 | Small | Print float | operand unused, imm1 = stack var slot |
+| 0xA3 | PRINT_STR | Small | Print string from buffer | operand unused, imm1 = buf idx |
+| 0xA4 | PRINTLN | Tiny | Print newline | - |
+| 0xA5 | READ_I32 | Small | Read signed integer | operand = dest stack var slot |
+| 0xA6 | READ_U32 | Small | Read unsigned integer | operand = dest stack var slot |
+| 0xA7 | READ_F32 | Small | Read float | operand = dest stack var slot |
+| 0xA8 | READ_STR | Small | Read string to buffer | operand unused, imm1 = dest buf idx |
 
 ### 5. VM Execution Model
 
 #### 5.1 Initialization
 
 On VM initialization:
-1. All registers are zeroed (A, B, C, D, F, G, H, J, K)
-2. All global variables are zeroed (`intval`, `uintval`, `floatval`, `strval_idx`)
-3. All strings in pool are cleared (empty strings)
-4. Stack pointer (SP) is set to 0 (frame level 0)
-5. Program counter (PC) is set to 0
-6. Condition flags are cleared
-7. All stack frames are zeroed
+1. All global variables (g_vars[]) are set to V_VOID type with zero values
+2. All memory buffers (g_membuf[]) are set to MB_VOID type with cleared contents
+3. Stack pointer (SP) is set to 0 (frame level 0)
+4. Program counter (PC) is set to 0
+5. Condition flags are cleared
+6. All stack frames are zeroed
 
 #### 5.2 Instruction Fetch-Decode-Execute Cycle
 
 ```
 while PC < program_length and opcode != HALT:
-    1. Fetch: instruction = program[PC]
-    2. Decode: opcode = instruction.opcode
-    3. Execute: Perform operation based on opcode
-    4. Increment PC (unless jump/call/return modified it)
-    5. Check for errors (stack overflow/underflow, division by zero, etc.)
+    1. Fetch: Read instruction header at PC
+    2. Decode: Extract opcode, operand, payload_len, and immediate types
+    3. Fetch payload: Read payload_len 4-byte words based on instruction size
+    4. Execute: Perform operation based on opcode
+    5. Increment PC by instruction size (4 + payload_len * 4 bytes)
+    6. Check for errors (stack overflow/underflow, division by zero, etc.)
 ```
 
-#### 5.3 Register Management
+The variable-length instruction format allows the VM to be space-efficient while maintaining alignment.
 
-**Register Operations:**
-- All arithmetic and logical operations work on registers
-- LOAD operations move data from immediates, globals, or locals into registers
-- STORE operations move data from registers to globals or locals
-- Register values are preserved across instructions unless explicitly modified
+#### 5.3 Stack Variable Management
 
-**Register Categories:**
-- Signed integer registers (A, B, C, D): For signed arithmetic and comparisons
-- Unsigned integer registers (F, G, H): For unsigned arithmetic, bitwise ops, addresses
-- Float registers (J, K): For floating-point operations
-- Special registers (SP, PC): Managed by control flow instructions
+Stack variables in the current frame are the primary working storage for the VM. Unlike register-based VMs, there are no dedicated registers - all operations work directly on typed stack variables.
 
-#### 5.4 Stack Frame Management
+**Accessing Stack Variables:**
+- Stack variables are accessed via the `operand` byte in the instruction header (0-15 for stack_vars[])
+- Each stack variable is a full var_value_t with a type tag
+- The VM checks type compatibility before operations
+- Stack variables can hold values or references
 
-**Stack Frame Operations:**
+**Stack Variable Types:**
+- Direct values: V_I32, V_U32, V_FLOAT, V_U8, V_U16, V_UC
+- References: V_GLOBAL_VAR_IDX, V_STACK_VAR_IDX, V_BUF_IDX, V_BUF_POS
 
-The VM uses pre-allocated stack frames (maximum depth 16). Each frame is completely independent with its own storage:
+**Example:**
+```c
+// Load immediate value 42 into stack_vars[0]
+LOAD_I_I32 operand=0, imm1=42
+// Now stack_frames[SP].stack_vars[0].type == V_I32
+// and stack_frames[SP].stack_vars[0].val.i32 == 42
 
-- **Frame Structure**:
-  ```
-  - vars[16]: Parameter passing and return value slots
-  - int_locals[16]: Frame-local signed integers
-  - uint_locals[16]: Frame-local unsigned integers
-  - float_locals[16]: Frame-local floats
-  - str_locals[16]: Frame-local string indices
-  - return_addr: Saved PC for return
-  ```
+// Add two stack variables
+ADD_I32 operand=2, imm1=0, imm2=1
+// Result stored in stack_vars[2]
+```
 
-- **Stack Variable Management**:
-  ```c
-  // Push value to current frame's stack variable (PUSHV_* opcodes)
-  if (var_slot >= STACK_VAR_COUNT) error("invalid var slot");
-  stack_frames[SP].vars[var_slot].type = SV_INT;  // Or appropriate type
-  stack_frames[SP].vars[var_slot].i32 = value;    // Or register value for PUSHV_R_*
-  
-  // Push value to next frame's stack variable (PUSH_PARAM_* opcodes, for parameter passing)
-  if (SP >= STACK_DEPTH - 1) error("stack overflow, cannot push params");
-  if (var_slot >= STACK_VAR_COUNT) error("invalid var slot");
-  stack_frames[SP + 1].vars[var_slot].type = SV_INT;  // Or appropriate type
-  stack_frames[SP + 1].vars[var_slot].i32 = value;
-  
-  // Push value to previous frame's stack variable (PUSH_RETURN_* opcodes, for return values)
-  if (SP == 0) error("stack underflow, cannot push returns");
-  if (var_slot >= STACK_VAR_COUNT) error("invalid var slot");
-  stack_frames[SP - 1].vars[var_slot].type = SV_INT;  // Or appropriate type
-  stack_frames[SP - 1].vars[var_slot].i32 = value;    // Or register value for PUSH_RETURN_R_*
-  
-  // Pop value from stack variable (retrieve parameter/return value)
-  if (var_slot >= STACK_VAR_COUNT) error("invalid var slot");
-  if (stack_frames[SP].vars[var_slot].type != SV_INT) error("type mismatch");
-  value = stack_frames[SP].vars[var_slot].i32;
-  ```
+#### 5.4 Local Variable Management
 
-- **Overflow check**: Check `SP >= STACK_DEPTH - 1` before CALL
-- **Underflow check**: Check `SP == 0` before RET
-
-#### 5.5 Variable Addressing
-
-**Global Variables:**
-- Direct indexing: `intval[index]`, `uintval[index]`, `floatval[index]`, `strval_idx[index]`
-- Index range: 0-255
-- Bounds checking required before access
-- Example: `LOADI_G us1=0, us2=5` loads `intval[5]` into register A
+Local variables provide additional storage within a frame for variables that need to persist across operations but aren't passed as parameters.
 
 **Local Variables:**
-- Direct indexing within current frame: `stack_frames[SP].int_locals[index]`
-- Index range: 0-15
-- Each frame has its own independent local storage
-- Example: `STOREI_L us1=1, us2=3` stores register B into `int_locals[3]` of current frame
+- 64 local variables per frame (locals[0] through locals[63])
+- Each is a full var_value_t with type tag
+- Typically zeroed when entering a function
+- Accessed via LOAD_L and STORE_L instructions
 
-**String Pool:**
-- Global string storage: `strval[pool_index]`
-- Pool index range: 0-127
-- Global string variables store indices: `strval_idx[var_index]` points to pool entry
-- Local string variables store indices: `str_locals[var_index]` points to pool entry
+**Example:**
+```c
+// Store stack_vars[0] to locals[5]
+STORE_L operand=0, imm1=5
+
+// Later, load locals[5] back to stack_vars[1]
+LOAD_L operand=1, imm1=5
+```
+
+#### 5.5 Global Variable Management
+
+Global variables provide shared storage across all function calls.
+
+**Global Variables:**
+- 256 global variables (g_vars[0] through g_vars[255])
+- Each is a full var_value_t with type tag
+- Persistent across function calls
+- Accessed via LOAD_G and STORE_G instructions
+
+**Example:**
+```c
+// Store stack_vars[0] to global variable 100
+STORE_G operand=0, imm1=100
+
+// Load global variable 100 to stack_vars[1]
+LOAD_G operand=1, imm1=100
+```
 
 #### 5.6 Function Calls
 
+Function calls use stack frames to maintain separate execution contexts. The mechanism relies on stack variables for parameter passing and return values.
+
 **CALL Operation:**
 1. Check stack overflow: `if (SP >= STACK_DEPTH - 1) error("stack overflow")`
-2. Increment SP: `SP++`
-3. Zero the new frame's local storage (but NOT vars[]): 
-   - `memset(stack_frames[SP].int_locals, 0, sizeof(stack_frames[SP].int_locals));`
-   - `memset(stack_frames[SP].uint_locals, 0, sizeof(stack_frames[SP].uint_locals));`
-   - `memset(stack_frames[SP].float_locals, 0, sizeof(stack_frames[SP].float_locals));`
-   - `memset(stack_frames[SP].str_locals, 0, sizeof(stack_frames[SP].str_locals));`
-4. Save return address: `stack_frames[SP].return_addr = PC + 1`
-5. Set PC to target address: `PC = ui1`
+2. Save return address: `stack_frames[SP + 1].return_addr = PC + 4` (PC + instruction size)
+3. Increment SP: `SP++`
+4. Zero the new frame's locals (stack_vars are preserved from parameter setup):
+   ```c
+   for (i = 0; i < STACK_LOCALS_COUNT; i++) {
+       stack_frames[SP].locals[i].type = V_VOID;
+       stack_frames[SP].locals[i].val.u32 = 0;
+   }
+   ```
+5. Set PC to target address: `PC = imm1.u32`
 
 **Parameter Passing:**
-- Caller uses PUSH_PARAM_* opcodes to place parameters in `stack_frames[SP + 1].vars[]` before CALL (with bounds check for SP+1)
-- After CALL, callee accesses parameters from its own `stack_frames[SP].vars[]`
-- Parameters can be values (SV_INT, SV_UINT, SV_FLOAT) or references (SV_GLOBAL_*_IDX)
+Before calling a function, the caller sets up parameters in the next frame's stack_vars[]:
+```c
+// Caller (at frame level 0):
+LOAD_I_I32 operand=0, imm1=10                // Load 10 into stack_vars[0]
+STORE_S operand=0, imm1={frame=1, var=0}     // Store to next frame's stack_vars[0]
+LOAD_I_I32 operand=1, imm1=20                // Load 20 into stack_vars[1]
+STORE_S operand=1, imm1={frame=1, var=1}     // Store to next frame's stack_vars[1]
+CALL imm1=<function_addr>                    // Call function
+
+// Callee (now at frame level 1):
+// Parameters are already in stack_vars[0] and stack_vars[1]
+ADD_I32 operand=2, imm1=0, imm2=1            // Add params, result in stack_vars[2]
+```
 
 **RET Operation:**
 1. Check stack underflow: `if (SP == 0) error("stack underflow")`
@@ -561,57 +560,89 @@ The VM uses pre-allocated stack frames (maximum depth 16). Each frame is complet
 3. Decrement SP: `SP--`
 
 **Return Values:**
-- Before RET, callee uses PUSH_RETURN_* or PUSH_RETURN_R_* opcodes to place return values in the caller's `stack_frames[SP - 1].vars[]`
-- After RET, caller uses POPV_* opcodes to retrieve return values from its own `stack_frames[SP].vars[]`
+Before returning, the callee stores the return value in ret_val:
+```c
+// Callee stores return value
+STORE_RET operand=2, imm1=SP                 // Store stack_vars[2] to current frame's ret_val
+RET
 
-**Example Call Sequence:**
+// Caller retrieves return value (after RET, SP has decremented)
+LOAD_RET operand=0, imm1=(SP+1)              // Load return value from frame SP+1 to stack_vars[0]
 ```
+
+**Complete Function Call Example:**
+```c
+# High-level: result = add(5, 3)
+# where add(a, b) { return a + b; }
+
 # Caller (at frame level 0):
-PUSH_PARAM_I us1=0, i1=10    # Push param 1 to vars[0] of next frame
-PUSH_PARAM_I us1=1, i1=20    # Push param 2 to vars[1] of next frame
-CALL ui1=<function_addr>     # SP becomes 1, vars[0] and vars[1] preserved
+LOAD_I_I32 operand=0, imm1=5                 # Load param 1
+STORE_S operand=0, imm1={frame=1, var=0}     # Store to next frame's stack_vars[0]
+LOAD_I_I32 operand=1, imm1=3                 # Load param 2
+STORE_S operand=1, imm1={frame=1, var=1}     # Store to next frame's stack_vars[1]
+CALL imm1=<add_addr>                         # Call add(), SP becomes 1
+LOAD_RET operand=0, imm1=1                   # Load return value from frame 1
+PRINT_I32 imm1=0                             # Print result
+HALT
 
-# Callee (now at frame level 1):
-POPV_I us1=0, us2=0          # Pop param 1 from vars[0] to register A
-POPV_I us1=1, us2=1          # Pop param 2 from vars[1] to register B
-ADDI_R us1=0, us2=0, i1=1    # A = A + B
-PUSH_RETURN_R_I us1=0, us2=0 # Push return value (register A) to caller's vars[0]
-RET                          # SP becomes 0, PC restored
-
-# Caller (back at frame level 0):
-POPV_I us1=0, us2=0          # Pop return value from vars[0] to register A
+# Function 'add' (at frame level 1):
+<add_addr>:
+ADD_I32 operand=2, imm1=0, imm2=1            # stack_vars[2] = stack_vars[0] + stack_vars[1]
+STORE_RET operand=2, imm1=SP                 # Store result to ret_val (imm1=SP means current frame)
+RET                                          # Return, SP becomes 0
 ```
 
-#### 5.7 Condition Flags
+#### 5.7 Memory Buffer Operations
+
+Memory buffers provide array and string storage. Each buffer has a type that determines how it's interpreted.
+
+**Buffer Indexing:**
+- Buffers are 256 bytes total
+- Element size depends on type: U8 (256 elements), U16 (128 elements), I32/U32/FLOAT (64 elements)
+- Position is always in element units, not bytes
+- Bounds checking is required based on buffer type
+
+**String Storage:**
+- Strings are stored in MB_U8 buffers
+- Null-terminated C-style strings
+- Maximum length is 255 characters (256th byte for null terminator)
+
+**Example:**
+```c
+// Write value to integer array
+LOAD_I_I32 operand=0, imm1=42          # Load value
+LOAD_I_U32 operand=1, imm1=5           # Load index
+BUF_WRITE operand=0, imm1=10, imm2=1   # Write to buffer 10 at position from stack_vars[1]
+
+// Read from array
+LOAD_I_U32 operand=1, imm1=5           # Load index
+BUF_READ operand=0, imm1=10, imm2=1    # Read from buffer 10 at position 5
+```
+
+#### 5.8 Condition Flags
 
 The VM maintains condition flags set by comparison operations:
-- **Zero (Z)**: Result is zero or values are equal
+- **Zero (Z)**: Values are equal
 - **Less (L)**: First operand is less than second
 - **Greater (G)**: First operand is greater than second
 
-Flags are updated by CMP and TST operations and tested by conditional jumps.
+Flags are set by CMP_* operations and tested by conditional jump instructions (JZ, JNZ, JLT, JGT, JLE, JGE).
 
-**Flag Register (F):**
-The F register (unsigned) is also used to store flag values and overflow/carry results:
-- Bit 0: Zero flag
-- Bit 1: Less flag
-- Bit 2: Greater flag
-- Bit 3: Overflow flag (for signed arithmetic)
-- Bit 4: Carry flag (for unsigned arithmetic)
-
-#### 5.8 Error Handling
+#### 5.9 Error Handling
 
 The VM detects and reports the following error conditions:
 
 1. **Stack Overflow**: SP >= STACK_DEPTH - 1 on CALL
 2. **Stack Underflow**: SP == 0 on RET
-3. **Division by Zero**: Integer or float division by zero
-4. **Invalid Variable Index**: Index out of bounds for globals or locals
-5. **Invalid String Pool Index**: String pool index >= STRVAL_LEN
-6. **Invalid Register**: Register index out of range for type
-7. **Invalid Opcode**: Unrecognized opcode value
-8. **Invalid PC**: PC out of program bounds
-9. **Type Mismatch**: Stack variable type doesn't match expected type
+3. **Division by Zero**: Integer or float division/modulo by zero
+4. **Invalid Global Index**: Global variable index >= G_VARS_COUNT
+5. **Invalid Local Index**: Local variable index >= STACK_LOCALS_COUNT
+6. **Invalid Stack Var Index**: Stack variable index >= STACK_VAR_COUNT
+7. **Invalid Buffer Index**: Buffer index >= G_MEMBUF_COUNT
+8. **Invalid Buffer Position**: Position out of bounds for buffer type
+9. **Type Mismatch**: Operation type doesn't match variable type
+10. **Invalid Opcode**: Unrecognized opcode value
+11. **Invalid PC**: PC out of program bounds
 
 ### 6. MISRA-C Compliance Details
 
@@ -621,155 +652,164 @@ The VM detects and reports the following error conditions:
 - **Pre-allocated Frames**: Stack frames are pre-allocated (no dynamic allocation)
 - **Bounds Checking**: All array accesses are validated against array bounds
 - **No Pointer Arithmetic**: Array indexing uses subscript notation only
+- **Fixed Limits**: Maximum stack depth (32), global variables (256), buffers (256)
 
 #### 6.2 Type Safety
 
-- **Separate Type Storage**: Distinct register sets and storage arrays for signed, unsigned, and float types
-- **Explicit Type Conversions**: Type conversions use dedicated opcodes (ITOF, ITOU, UTOI, FTOI, etc.)
+- **Tagged Union Types**: var_value_t, membuf_t use type tags to prevent misuse
+- **Explicit Type Conversions**: Type conversions use dedicated opcodes
 - **Fixed-Width Types**: Use `int32_t`, `uint32_t`, `uint16_t`, `uint8_t` for integer types
 - **Float Requirement**: Implementation requires IEEE 754 single-precision (32-bit) floating point support
-- **Enum for Opcodes**: Opcodes defined as enumeration constants
-- **Typed Stack Variables**: Stack variables explicitly track type to prevent type confusion
+- **Enum for Opcodes and Types**: Opcodes and type tags defined as enumeration constants
+- **Runtime Type Checking**: VM validates type tags before operations
 
-#### 6.3 Bitwise Operations (MISRA-C Compliant)
+#### 6.3 Unions and Variant Types
+
+While MISRA-C generally advises against unions, Stipple uses them in a controlled manner:
+
+- **Tagged Unions Only**: All unions (var_value_t, membuf_t, instruction_payload_t) have associated type tags
+- **Type Tag Validation**: Type tag is always checked before accessing union members
+- **No Type Punning**: Union members are only accessed according to their type tag
+- **Deterministic**: The active union member is always known from the type tag
+
+This usage is acceptable under MISRA-C guidelines when proper discipline is maintained.
+
+#### 6.4 Bitwise Operations (MISRA-C Compliant)
 
 Per MISRA-C Rule 10.1: "Shift and bitwise operations shall only be performed on operands of essentially unsigned type"
 
-- **Unsigned-Only Bitwise Ops**: All bitwise operations (AND, OR, XOR, NOT, SHL, SHR) only operate on unsigned registers (F, G, H)
-- **Unsigned Shift Operands**: Shift count operands use unsigned types (us2 field)
-- **No Signed Bitwise**: Signed integer registers (A, B, C, D) cannot be used for bitwise operations
-- **Explicit Type**: Bitwise opcodes explicitly use `ui1`, `ui2` for immediate unsigned operands
+- **Unsigned-Only Bitwise Ops**: All bitwise operations (AND, OR, XOR, NOT, SHL, SHR) only operate on V_U32 typed values
+- **Type Checking**: VM verifies operands are V_U32 type before bitwise operations
+- **No Signed Bitwise**: V_I32 values cannot be used for bitwise operations
 
-#### 6.4 Deterministic Behavior
+#### 6.5 Deterministic Behavior
 
-- **Defined Overflow**: Integer operations use well-defined wraparound semantics
+- **Defined Overflow**: Integer operations use well-defined wraparound semantics for unsigned, and implementation-defined for signed (typically two's complement)
 - **No Undefined Behavior**: All edge cases explicitly handled
-- **Predictable Execution**: No implementation-defined behavior in VM core
+- **Predictable Execution**: No implementation-defined behavior in VM core beyond integer overflow
 - **Pre-allocated Resources**: Fixed stack depth prevents unbounded recursion
-- **Bounds Checking**: All array accesses validated, including SP+1 checks for PUSH_PARAM_* opcodes to prevent buffer overflow
-
-#### 6.5 Code Structure
-
-```c
-/* Example VM state structure */
-typedef struct {
-    instruction_t program[1024];     /* Program memory */
-    uint16_t program_length;         /* Number of instructions */
-    uint32_t pc;                     /* Program counter */
-    uint16_t sp;                     /* Stack pointer (frame level) */
-    
-    /* Registers */
-    int32_t A, B, C, D;             /* Signed integer registers */
-    uint32_t F, G, H;               /* Unsigned integer registers */
-    float J, K;                     /* Float registers */
-    
-    /* Global storage */
-    int32_t intval[256];            /* Global signed integers */
-    uint32_t uintval[256];          /* Global unsigned integers */
-    float floatval[256];            /* Global floats */
-    char strval[128][256];          /* String pool */
-    uint8_t strval_idx[256];        /* Global string variable indices */
-    
-    /* Stack frames */
-    stack_frame_t stack_frames[16]; /* Pre-allocated frames */
-    
-    /* Condition flags */
-    uint8_t flags;                  /* Z, L, G flags */
-} vm_state_t;
-```
+- **Bounds Checking**: All array accesses validated
 
 ### 7. Performance Considerations
 
 #### 7.1 Memory Footprint
 
-- **Instruction Memory**: ~32-36 KB for 1024 instructions (each instruction_t: 2+2+2+4+4+4+4+4+4 = 30 bytes base, may have padding to 32 or 36 bytes)
-- **Registers**: 4×4 (int) + 3×4 (uint) + 2×4 (float) + special = ~44 bytes
-- **Global Storage**: 
-  - 256×4 (intval) = 1024 bytes
-  - 256×4 (uintval) = 1024 bytes
-  - 256×4 (floatval) = 1024 bytes
-  - 128×256 (strval) = 32768 bytes
-  - 256×1 (strval_idx) = 256 bytes
-  - **Total**: ~36 KB
-- **Stack Frames**: 16 frames × (16×52 bytes/stack_variable + 16×4 + 16×4 + 16×4 + 16×1 + 4) ≈ 16 × 1.1 KB ≈ 18 KB
-- **Total**: Approximately 86-90 KB base footprint (depending on struct padding)
+- **Global Variables**: 256 × sizeof(var_value_t) ≈ 256 × 12 bytes = 3 KB
+- **Global Memory Buffers**: 256 × 256 bytes = 64 KB
+- **Stack Frames**: 32 × sizeof(stack_frame_t)
+  - 16 stack_vars × 12 bytes = 192 bytes
+  - 64 locals × 12 bytes = 768 bytes
+  - 1 ret_val × 12 bytes = 12 bytes
+  - return_addr = 4 bytes
+  - Total per frame: ~976 bytes
+  - Total for 32 frames: ~31 KB
+- **Total**: Approximately 98 KB base footprint (plus instruction memory)
 
 #### 7.2 Execution Speed
 
-- **Register-based**: Faster than pure stack-based due to reduced memory access
-- **Single-cycle operations**: Most arithmetic, logical, and load/store operations
-- **Multi-cycle operations**: String operations, I/O operations, function calls
+- **Stack-based Design**: More memory accesses than register-based, but simpler decoder
+- **Variable-length Instructions**: Compact encoding reduces instruction memory
+- **Typed Operations**: Type checking overhead on each operation
 - **Cache-friendly**: All data in fixed arrays with predictable access patterns
-- **Predictable timing**: No dynamic allocation or unbounded loops
+- **Predictable Timing**: No dynamic allocation or unbounded loops
 
-### 8. Example Program
+#### 7.3 Instruction Encoding Efficiency
 
-Here's a simple example showing how a program would be encoded with the register-based architecture:
+The variable-length instruction format provides good space efficiency:
+- **Tiny (4 bytes)**: NOP, HALT, RET, PRINTLN - minimal operations
+- **Small (8 bytes)**: Most common operations with 1 operand
+- **Medium (12 bytes)**: Binary operations (arithmetic, bitwise, comparison)
+- **Large (16 bytes)**: Ternary operations (rare, e.g., STR_SET_CHR)
+
+### 8. Example Programs
+
+#### 8.1 Simple Arithmetic
 
 ```
-# High-level pseudocode:
-# x = 10
-# y = 20
-# z = x + y
-# print(z)
+# High-level: x = 10 + 20
+# Store result in global variable 0
 
-# Assembled opcodes:
-0: LOADI_I   us1=0, i1=10        # Load 10 into register A
-1: STOREI_G  us1=0, us2=0        # Store A to global[0] (x)
-2: LOADI_I   us1=1, i1=20        # Load 20 into register B
-3: STOREI_G  us1=1, us2=1        # Store B to global[1] (y)
-4: LOADI_G   us1=0, us2=0        # Load global[0] into register A
-5: LOADI_G   us1=1, us2=1        # Load global[1] into register B
-6: ADDI_R    us1=2, us2=0, i1=1  # C = A + B
-7: STOREI_G  us1=2, us2=2        # Store C to global[2] (z)
-8: PRINTI    us1=2               # Print register C
-9: HALT                          # Stop
+LOAD_I_I32 operand=0, imm1=10          # stack_vars[0] = 10
+LOAD_I_I32 operand=1, imm1=20          # stack_vars[1] = 20
+ADD_I32 operand=2, imm1=0, imm2=1      # stack_vars[2] = stack_vars[0] + stack_vars[1]
+STORE_G operand=2, imm1=0              # g_vars[0] = stack_vars[2]
+PRINT_I32 imm1=2                       # Print stack_vars[2]
+HALT
 ```
 
-**Example with Function Call:**
+#### 8.2 Function Call with Parameters
 
 ```
 # High-level: result = add(5, 3)
 # where add(a, b) { return a + b; }
 
-# Main program:
-0: PUSH_PARAM_I us1=0, i1=5  # Push param 1 (value 5) to next frame's vars[0]
-1: PUSH_PARAM_I us1=1, i1=3  # Push param 2 (value 3) to next frame's vars[1]
-2: CALL      ui1=10          # Call function at address 10
-3: POPV_I    us1=0, us2=0    # Pop return value from vars[0] to register A
-4: PRINTI    us1=0           # Print result
-5: HALT
+main:
+    LOAD_I_I32 operand=0, imm1=5                 # Prepare param 1
+    STORE_S operand=0, imm1={frame=1, var=0}     # Store to next frame's stack_vars[0]
+    LOAD_I_I32 operand=1, imm1=3                 # Prepare param 2
+    STORE_S operand=1, imm1={frame=1, var=1}     # Store to next frame's stack_vars[1]
+    CALL imm1=add_func                           # Call add function, SP becomes 1
+    LOAD_RET operand=0, imm1=1                   # Get return value from frame 1
+    PRINT_I32 imm1=0                             # Print result
+    HALT
 
-# Function 'add' at address 10:
-10: POPV_I   us1=0, us2=0    # Pop param 1 to register A
-11: POPV_I   us1=1, us2=1    # Pop param 2 to register B
-12: ADDI_R   us1=0, us2=0, i1=1  # A = A + B
-13: PUSH_RETURN_R_I us1=0, us2=0   # Push return value (register A) to caller's vars[0]
-14: RET                      # Return to caller
+add_func:
+    # Parameters are in stack_vars[0] and stack_vars[1]
+    ADD_I32 operand=2, imm1=0, imm2=1            # Add parameters
+    STORE_RET operand=2, imm1=SP                 # Store return value to current frame's ret_val
+    RET
+```
+
+#### 8.3 Array Operations
+
+```
+# High-level: arr[5] = 42; print(arr[5])
+# Using buffer 0 as integer array
+
+LOAD_I_I32 operand=0, imm1=42          # Value to store
+LOAD_I_U32 operand=1, imm1=5           # Index
+BUF_WRITE operand=0, imm1=0, imm2=1    # arr[5] = 42
+BUF_READ operand=2, imm1=0, imm2=1     # Load arr[5]
+PRINT_I32 imm1=2                       # Print value
+HALT
+```
+
+#### 8.4 String Concatenation
+
+```
+# High-level: str3 = str1 + str2
+# Buffers 0 and 1 contain strings, result in buffer 2
+
+STR_CAT operand=2, imm1=0, imm2=1      # Concatenate buffers 0 and 1 into buffer 2
+PRINT_STR imm1=2                       # Print result
+HALT
 ```
 
 ### 9. Future Extensions
 
 Potential enhancements while maintaining MISRA-C compliance:
 
-1. **Extended String Operations**: Regular expression matching, formatting functions
-2. **Array Operations**: Support for array indexing and iteration within MISRA-C constraints
+1. **Extended Type System**: Additional types like V_I64, V_U64 for 64-bit integers
+2. **More Memory Buffers**: Increase G_MEMBUF_COUNT for larger programs
 3. **Debugging Support**: Breakpoint and trace opcodes for development
-4. **Optimization**: Peephole optimization of opcode sequences, dead code elimination
-5. **Error Recovery**: Structured exception handling with try/catch opcodes
-6. **File I/O**: File operations for persistent storage with error handling
+4. **Optimization**: Peephole optimization of instruction sequences
+5. **Error Recovery**: Structured exception handling with try/catch mechanisms
+6. **File I/O**: File operations for persistent storage
 7. **Interoperability**: Controlled foreign function interface for safe C library calls
-8. **Additional Registers**: More general-purpose registers if needed for complex operations
+8. **Packed Arrays**: Support for bit-packed arrays to save memory
 
 ### 10. Conclusion
 
-The Stipple VM provides a robust, MISRA-C compliant execution environment for a shell-like scripting language. The register-based architecture with pre-allocated stack frames ensures predictable behavior and compliance with safety-critical coding standards. Key features include:
+The Stipple VM provides a robust, MISRA-C compliant execution environment for a shell-like scripting language. The stack-based architecture with typed variables ensures safety and predictability. Key features include:
 
-- **MISRA-C Compliance**: Strict separation of signed/unsigned types, bitwise operations only on unsigned, no dynamic allocation
-- **Register-based Design**: Efficient execution with 9 general-purpose registers (4 signed int, 3 unsigned int, 2 float)
-- **Pre-allocated Frames**: Maximum stack depth of 16 with complete type safety
-- **Comprehensive Opcode Set**: 100+ opcodes supporting integer (signed/unsigned), floating-point, and string operations
-- **Type Safety**: Explicit type tracking in stack variables prevents type confusion
+- **MISRA-C Compliance**: Limited union usage with type tags, no dynamic allocation, unsigned-only bitwise operations
+- **Stack-based Design**: All operations work on typed stack variables instead of registers
+- **Variable-length Instructions**: Space-efficient encoding with tiny (4B), small (8B), medium (12B), and large (16B) instructions
+- **Typed Variables**: All variables (global, local, stack) have explicit type tags (var_value_t)
+- **Typed Buffers**: Memory buffers for arrays/strings with type tracking (membuf_t)
+- **Pre-allocated Frames**: Maximum stack depth of 32 with comprehensive bounds checking
+- **Function Call Mechanism**: Stack variables for parameter passing, ret_val for return values
+- **Type Safety**: Runtime type checking prevents type confusion
 - **Deterministic Behavior**: Fixed resource allocation and explicit error handling
 
-The architecture supports both value passing and reference passing through the typed stack variable system, enabling efficient parameter and return value handling while maintaining MISRA-C compliance.
+The architecture supports efficient execution while maintaining strict MISRA-C compliance through careful design of the type system, instruction format, and memory management.

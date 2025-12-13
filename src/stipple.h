@@ -70,7 +70,7 @@ typedef struct {
 	} buf;
 } membuf_t;
 
-char g_membuf[G_MEMBUF_COUNT];
+membuf_t g_membuf[G_MEMBUF_COUNT];
 
 /* Instructions */
 typedef enum {
@@ -79,11 +79,11 @@ typedef enum {
 	IMM_TYPE_USHORT = 2,
 	IMM_TYPE_UINT = 3,
 	IMM_TYPE_INT = 4,
-	IMM_TYPE_FLOAT = 5
+	IMM_TYPE_FLOAT = 5,
 	IMM_TYPE_STACK_VAR_REF = 6,
 	IMM_TYPE_GLOBAL_REF = 7,
 	IMM_TYPE_MEMBUF_REF = 8,
-	IMM_TYPE_MEMBUF_POS
+	IMM_TYPE_MEMBUF_POS = 9
 } imm_type_t;
 
 #define INSTRUCTION_HEADER_SIZE 4  /* Size of instruction header in bytes */
@@ -111,7 +111,7 @@ typedef union instruction_payload {
 		index_t global_var_idx;
 		index_t membuf_idx;
 		pos_t membuf_pos;
-};
+} instruction_payload_t;
 
 typedef struct tiny_instruction {
 	instruction_header_t header;
@@ -120,20 +120,20 @@ typedef struct tiny_instruction {
 
 typedef struct small_instruction {
 	instruction_header_t header;
-	union instruction_payload imm1; /* Immediate field 1 */
+	instruction_payload_t imm1; /* Immediate field 1 */
 } small_instruction_t;
 
 typedef struct medium_instruction {
 	instruction_header_t header;
-	union instruction_payload imm1; /* Immediate field 1 */
-	union instruction_payload imm2; /* Immediate field 2 */
+	instruction_payload_t imm1; /* Immediate field 1 */
+	instruction_payload_t imm2; /* Immediate field 2 */
 } medium_instruction_t;
 
 typedef struct large_instruction {
 	instruction_header_t header;
-	union instruction_payload imm1; /* Immediate field 1 */
-	union instruction_payload imm2; /* Immediate field 2 */
-	union instruction_payload imm3; /* Immediate field 3 */
+	instruction_payload_t imm1; /* Immediate field 1 */
+	instruction_payload_t imm2; /* Immediate field 2 */
+	instruction_payload_t imm3; /* Immediate field 3 */
 } large_instruction_t;
 
 /* Stacks */
