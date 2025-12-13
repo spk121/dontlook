@@ -562,13 +562,15 @@ ADD_I32 operand=2, imm1=0, imm2=1            // Add params, result in stack_vars
 **Return Values:**
 Before returning, the callee stores the return value in ret_val:
 ```c
-// Callee stores return value
-STORE_RET operand=2, imm1=SP                 // Store stack_vars[2] to current frame's ret_val
-RET
+// Callee (at frame level 1) stores return value
+STORE_RET operand=2, imm1=1                  // Store stack_vars[2] to frame 1's ret_val
+RET                                          // Return, SP becomes 0
 
-// Caller retrieves return value (after RET, SP has decremented)
-LOAD_RET operand=0, imm1=(SP+1)              // Load return value from frame SP+1 to stack_vars[0]
+// Caller (back at frame level 0) retrieves return value
+LOAD_RET operand=0, imm1=1                   // Load return value from frame 1 to stack_vars[0]
 ```
+
+Note: The frame index in STORE_RET and LOAD_RET is a literal immediate value encoded in the instruction. The callee must know its own frame level to store the return value, and the caller must know which frame to retrieve from (typically SP+1 before the CALL, which becomes the called frame).
 
 **Complete Function Call Example:**
 ```c
@@ -588,7 +590,7 @@ HALT
 # Function 'add' (at frame level 1):
 <add_addr>:
 ADD_I32 operand=2, imm1=0, imm2=1            # stack_vars[2] = stack_vars[0] + stack_vars[1]
-STORE_RET operand=2, imm1=SP                 # Store result to ret_val (imm1=SP means current frame)
+STORE_RET operand=2, imm1=1                  # Store result to frame 1's ret_val
 RET                                          # Return, SP becomes 0
 ```
 
@@ -756,7 +758,7 @@ main:
 add_func:
     # Parameters are in stack_vars[0] and stack_vars[1]
     ADD_I32 operand=2, imm1=0, imm2=1            # Add parameters
-    STORE_RET operand=2, imm1=SP                 # Store return value to current frame's ret_val
+    STORE_RET operand=2, imm1=1                  # Store return value to frame 1's ret_val
     RET
 ```
 
