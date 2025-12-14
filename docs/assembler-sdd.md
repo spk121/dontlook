@@ -396,7 +396,7 @@ asm_status_t encode_instruction(
             break;
     }
     
-    return VM_OK;
+    return ASM_OK;
 }
 ```
 
@@ -536,11 +536,11 @@ vm_status_t decode_instruction(
     instruction_header_t header;
     memcpy(&header, &program[pc], sizeof(header));
     
-    /* Validate payload length (optional: add max check if defined) */
+    /* Validate payload length */
     uint32_t payload_len = INSTR_PAYLOAD_LEN(header);
-    /* If there is a maximum allowed payload length, check here, e.g.:
-     * if (payload_len > MAX_PAYLOAD_LEN) return VM_ERR_INVALID_INSTRUCTION;
-     */
+    if (payload_len > 3) {  /* Maximum 3 payload words (Large instruction) */
+        return VM_ERR_INVALID_INSTRUCTION;
+    }
     
     /* Calculate total instruction size */
     uint32_t instr_size = 4 + (payload_len * 4);
