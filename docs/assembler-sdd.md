@@ -584,11 +584,11 @@ vm_status_t decode_instruction(
 
 **With Hex Bytes:**
 ```asm
-0x0000: 13 00 11 00 | 2a 00 00 00     load.i s0, 42
-0x0008: 13 01 11 00 | 03 00 00 00     load.i s1, 3
-0x0010: 30 02 11 11 | 00 01           add.i32 s2, s0, s1
-0x001c: a0 00 11 00 | 02              print.i32 s2
-0x0024: 01 00 00 00                   halt
+0x0000: 13 00 41 00 | 2a 00 00 00                 load.i s0, 42
+0x0008: 13 01 41 00 | 03 00 00 00                 load.i s1, 3
+0x0010: 30 02 12 01 | 00 00 00 00 | 01 00 00 00   add.i32 s2, s0, s1
+0x001c: a0 00 11 00 | 00 00 00 00                 print.i32 s2
+0x0024: 01 00 00 00                               halt
 ```
 
 #### 6.5 Disassembler API
@@ -731,7 +731,7 @@ void test_assemble_simple_program(void) {
 void test_disassemble_simple_program(void) {
     uint8_t bytecode[] = {
         0x13, 0x00, 0x41, 0x00, 0x2A, 0x00, 0x00, 0x00,  /* load.i s0, 42 */
-        0xA0, 0x00, 0x21, 0x00, 0x00, 0x00, 0x00, 0x00,  /* print.i32 s0 */
+        0xA0, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00,  /* print.i32 s0 */
         0x01, 0x00, 0x00, 0x00                           /* halt */
     };
     
@@ -848,9 +848,9 @@ fib_loop:
     println
     
     # Shift variables: s0 = s1, s1 = s4
-    store.l s1, l1         # Temp save s1
-    load.l s0, l1          # s0 = s1
-    store.l s4, l1         # Update l1 with s4
+    store.l s1, l0         # Temp: l0 = old s1
+    store.l s4, l1         # Temp: l1 = s4 (new value)
+    load.l s0, l0          # s0 = old s1
     load.l s1, l1          # s1 = s4
     
     # Decrement counter
