@@ -371,7 +371,7 @@ typedef enum {
 
 **Instruction Encoding Algorithm:**
 ```c
-vm_status_t encode_instruction(
+asm_status_t encode_instruction(
     assembler_state_t* asm_state,
     const instruction_spec_t* spec,
     const operand_t operands[],
@@ -527,13 +527,30 @@ vm_status_t decode_instruction(
         return VM_ERR_INVALID_PC;
     }
     
+    /* Ensure enough bytes for header */
+    if (program_len - pc < sizeof(instruction_header_t)) {
+        return VM_ERR_INVALID_INSTRUCTION;
+    }
+    
     /* Read header */
     instruction_header_t header;
     memcpy(&header, &program[pc], sizeof(header));
     
+    /* Validate payload length (optional: add max check if defined) */
+    uint32_t payload_len = INSTR_PAYLOAD_LEN(header);
+    /* If there is a maximum allowed payload length, check here, e.g.:
+     * if (payload_len > MAX_PAYLOAD_LEN) return VM_ERR_INVALID_INSTRUCTION;
+     */
+    
+    /* Calculate total instruction size */
+    uint32_t instr_size = 4 + (payload_len * 4);
+    if (program_len - pc < instr_size) {
+        return VM_ERR_INVALID_INSTRUCTION;
+    }
+    
     /* Look up opcode */
     instr->opcode = header.opcode;
-    instr->size = 4 + (INSTR_PAYLOAD_LEN(header) * 4);
+    instr->size = instr_size;
     
     /* Decode operands based on instruction type */
     decode_operands(&header, &program[pc + 4], instr->operands);
@@ -567,10 +584,10 @@ vm_status_t decode_instruction(
 
 **With Hex Bytes:**
 ```asm
-0x0000: 13 00 34 00 | 2a 00 00 00     load.i s0, 42
-0x0008: 13 01 34 00 | 03 00 00 00     load.i s1, 3
-0x0010: 30 02 22 00 | 00 00 | 01 00   add.i32 s2, s0, s1
-0x001c: a0 00 10 00 | 02 00 00 00     print.i32 s2
+0x0000: 13 00 11 00 | 2a 00 00 00     load.i s0, 42
+0x0008: 13 01 11 00 | 03 00 00 00     load.i s1, 3
+0x0010: 30 02 11 11 | 00 01           add.i32 s2, s0, s1
+0x001c: a0 00 11 00 | 02              print.i32 s2
 0x0024: 01 00 00 00                   halt
 ```
 
@@ -630,7 +647,7 @@ Symbol table: 8 symbols
 #### 7.2 Disassembler Usage
 
 ```bash
-stipple-disasm [options] <input.bin> -o <output.asm>
+stipple-disasm [options] <input.bin> [-o <output.asm>]
 
 Options:
   -o <file>       Output assembly file (default: stdout)
@@ -713,8 +730,8 @@ void test_assemble_simple_program(void) {
 ```c
 void test_disassemble_simple_program(void) {
     uint8_t bytecode[] = {
-        0x13, 0x00, 0x34, 0x00, 0x2A, 0x00, 0x00, 0x00,  /* load.i s0, 42 */
-        0xA0, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00,  /* print.i32 s0 */
+        0x13, 0x00, 0x41, 0x00, 0x2A, 0x00, 0x00, 0x00,  /* load.i s0, 42 */
+        0xA0, 0x00, 0x21, 0x00, 0x00, 0x00, 0x00, 0x00,  /* print.i32 s0 */
         0x01, 0x00, 0x00, 0x00                           /* halt */
     };
     
@@ -831,7 +848,6 @@ fib_loop:
     println
     
     # Shift variables: s0 = s1, s1 = s4
-    store.l s0, l0         # Temp save s0
     store.l s1, l1         # Temp save s1
     load.l s0, l1          # s0 = s1
     store.l s4, l1         # Update l1 with s4
