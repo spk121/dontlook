@@ -847,11 +847,12 @@ fib_loop:
     print.i32 s4
     println
     
-    # Shift variables: s0 = s1, s1 = s4
-    store.l s1, l0         # Temp: l0 = old s1
-    store.l s4, l1         # Temp: l1 = s4 (new value)
-    load.l s0, l0          # s0 = old s1 (shift left)
-    load.l s1, l1          # s1 = s4 (new fib value)
+    # Shift variables for next iteration: s0 = s1, s1 = s4
+    # (We need: old s1 becomes new s0, s4 becomes new s1)
+    store.l s1, l0         # Save current s1
+    store.l s4, l1         # Save s4
+    load.l s0, l0          # s0 = saved s1 (shift: s0 gets old s1 value)
+    load.l s1, l1          # s1 = saved s4 (s1 gets new fib value)
     
     # Decrement counter
     load.i s5, 1
