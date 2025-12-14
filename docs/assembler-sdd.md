@@ -329,7 +329,7 @@ typedef struct {
 
 **Assembler State:**
 ```c
-#define PROGRAM_MAX_SIZE 65536  /* 64KB - from VM SDD */
+#define PROGRAM_MAX_SIZE 65536  /* 64KB - see docs/sdd.md section 3.1 */
 
 typedef struct {
     symbol_table_t symbols;
@@ -825,15 +825,16 @@ fib_loop:
     cmp.i32 s2, s3
     jle done
     
-    # Calculate next: s4 = s0 + s1
-    add.i32 s4, s0, s1
+    # Calculate next Fibonacci number
+    add.i32 s4, s0, s1     # s4 = s0 + s1
     print.i32 s4
     println
     
-    # Shift: s0 = s1, s1 = s4
-    store.l s1, l0         # Save old s1 to temp
-    store.l s4, l1         # Save s4 to temp
-    load.l s0, l0          # s0 = old s1
+    # Shift variables: s0 = s1, s1 = s4
+    store.l s0, l0         # Temp save s0
+    store.l s1, l1         # Temp save s1
+    load.l s0, l1          # s0 = s1
+    store.l s4, l1         # Update l1 with s4
     load.l s1, l1          # s1 = s4
     
     # Decrement counter
