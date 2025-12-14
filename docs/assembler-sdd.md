@@ -850,8 +850,8 @@ fib_loop:
     # Shift variables: s0 = s1, s1 = s4
     store.l s1, l0         # Temp: l0 = old s1
     store.l s4, l1         # Temp: l1 = s4 (new value)
-    load.l s0, l0          # s0 = old s1
-    load.l s1, l1          # s1 = s4
+    load.l s0, l0          # s0 = old s1 (shift left)
+    load.l s1, l1          # s1 = s4 (new fib value)
     
     # Decrement counter
     load.i s5, 1
