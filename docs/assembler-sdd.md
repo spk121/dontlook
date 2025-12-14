@@ -294,7 +294,7 @@ typedef struct {
 
 typedef struct {
     symbol_t symbols[MAX_SYMBOLS];
-    uint32_t count;
+    uint32_t count;       /* Number of symbols currently stored */
 } symbol_table_t;
 ```
 
@@ -329,6 +329,8 @@ typedef struct {
 
 **Assembler State:**
 ```c
+#define PROGRAM_MAX_SIZE 65536  /* 64KB - from VM SDD */
+
 typedef struct {
     symbol_table_t symbols;
     uint8_t output[PROGRAM_MAX_SIZE];
@@ -829,11 +831,10 @@ fib_loop:
     println
     
     # Shift: s0 = s1, s1 = s4
-    store.l s0, l0         # Save s0
-    store.l s1, l1         # Save s1
-    load.l s0, l1          # s0 = old s1
-    store.l s4, l1         # s1 = s4
-    load.l s1, l1
+    store.l s1, l0         # Save old s1 to temp
+    store.l s4, l1         # Save s4 to temp
+    load.l s0, l0          # s0 = old s1
+    load.l s1, l1          # s1 = s4
     
     # Decrement counter
     load.i s5, 1
