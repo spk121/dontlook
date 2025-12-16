@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include <stdint.h>  /* For INT32_MIN */
 
 /* ============================================================================
  * Helper Functions - MISRA-C Compliant I/O (no printf/fprintf)
@@ -20,7 +21,12 @@ static void print_i32(int32_t value) {
     
     if (value < 0) {
         negative = true;
-        uval = (uint32_t)(-value);
+        /* Handle INT32_MIN specially to avoid undefined behavior */
+        if (value == INT32_MIN) {
+            uval = 2147483648u;
+        } else {
+            uval = (uint32_t)(-value);
+        }
     } else {
         uval = (uint32_t)value;
     }
