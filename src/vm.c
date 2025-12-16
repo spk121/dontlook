@@ -950,13 +950,13 @@ vm_status_t vm_step(vm_state_t* vm) {
             
             /* If we used a temp buffer, copy result to dest */
             if (out_buf == tmp) {
-                for (uint32_t k = 0; k <= i && k < MEMBUF_U8_COUNT; k++) {
+                /* Copy up to and including null terminator, with bounds check */
+                uint32_t copy_len = (i < MEMBUF_U8_COUNT - 1) ? i + 1 : MEMBUF_U8_COUNT;
+                for (uint32_t k = 0; k < copy_len; k++) {
                     dest_buf->buf.u8x256[k] = tmp[k];
                 }
                 /* Ensure null termination */
-                if (i >= MEMBUF_U8_COUNT) {
-                    dest_buf->buf.u8x256[MEMBUF_U8_COUNT - 1] = 0;
-                }
+                dest_buf->buf.u8x256[MEMBUF_U8_COUNT - 1] = 0;
             }
             break;
         }
