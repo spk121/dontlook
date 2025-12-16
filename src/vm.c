@@ -8,6 +8,113 @@
 #include <string.h>
 #include <math.h>
 
+/* ============================================================================
+ * Helper Functions - MISRA-C Compliant I/O (no printf/fprintf)
+ * ============================================================================ */
+
+static void print_i32(int32_t value) {
+    char buf[12];  /* Enough for -2147483648 + null */
+    int i = 0;
+    bool negative = false;
+    uint32_t uval;
+    
+    if (value < 0) {
+        negative = true;
+        uval = (uint32_t)(-value);
+    } else {
+        uval = (uint32_t)value;
+    }
+    
+    if (uval == 0u) {
+        (void)fputc('0', stdout);
+        return;
+    }
+    
+    while (uval > 0u) {
+        buf[i] = (char)('0' + (uval % 10u));
+        uval /= 10u;
+        i++;
+    }
+    
+    if (negative) {
+        (void)fputc('-', stdout);
+    }
+    
+    while (i > 0) {
+        i--;
+        (void)fputc(buf[i], stdout);
+    }
+}
+
+static void print_u32(uint32_t value) {
+    char buf[12];
+    int i = 0;
+    
+    if (value == 0u) {
+        (void)fputc('0', stdout);
+        return;
+    }
+    
+    while (value > 0u) {
+        buf[i] = (char)('0' + (value % 10u));
+        value /= 10u;
+        i++;
+    }
+    
+    while (i > 0) {
+        i--;
+        (void)fputc(buf[i], stdout);
+    }
+}
+
+static void print_f32(float value) {
+    /* Simple float printing - integer part, dot, 6 decimal places */
+    int32_t int_part;
+    float frac_part;
+    uint32_t frac_val;
+    int i;
+    
+    if (value < 0.0f) {
+        (void)fputc('-', stdout);
+        value = -value;
+    }
+    
+    int_part = (int32_t)value;
+    frac_part = value - (float)int_part;
+    
+    print_i32(int_part);
+    (void)fputc('.', stdout);
+    
+    /* Print 6 decimal places */
+    frac_val = (uint32_t)(frac_part * 1000000.0f);
+    for (i = 0; i < 6; i++) {
+        (void)fputc((char)('0' + (frac_val / 100000u)), stdout);
+        frac_val = (frac_val % 100000u) * 10u;
+    }
+}
+
+static void print_hex16(uint16_t value) {
+    const char hex[] = "0123456789ABCDEF";
+    (void)fputc('0', stdout);
+    (void)fputc('x', stdout);
+    (void)fputc(hex[(value >> 12) & 0xFu], stdout);
+    (void)fputc(hex[(value >> 8) & 0xFu], stdout);
+    (void)fputc(hex[(value >> 4) & 0xFu], stdout);
+    (void)fputc(hex[value & 0xFu], stdout);
+}
+
+static void print_hex8(uint8_t value) {
+    const char hex[] = "0123456789ABCDEF";
+    (void)fputc('0', stdout);
+    (void)fputc('x', stdout);
+    (void)fputc(hex[(value >> 4) & 0xFu], stdout);
+    (void)fputc(hex[value & 0xFu], stdout);
+}
+
+/* ============================================================================
+ * Helper Functions - String Conversion
+ * ============================================================================ */
+
 const char* var_type_to_string(var_value_type_t type) {
     const char* types[] = {"void", "i32", "u32", "float", "u8x4", "u16x2", 
                            "unicode", "global_ref", "stack_ref", "buffer_ref", "buffer_pos"};
@@ -645,25 +752,25 @@ vm_status_t vm_step(vm_state_t* vm) {
             var_value_t* src = get_stack_var(vm, imm1.u32 & 0xFF);
             if (!src) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
             if (src->type != V_I32) { status = VM_ERR_TYPE_MISMATCH; break; }
-            printf("%d", src->val.i32);
+            print_i32(src->val.i32);
             break;
         }
         case OP_PRINT_U32: {
             var_value_t* src = get_stack_var(vm, imm1.u32 & 0xFF);
             if (!src) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
             if (src->type != V_U32) { status = VM_ERR_TYPE_MISMATCH; break; }
-            printf("%u", src->val.u32);
+            print_u32(src->val.u32);
             break;
         }
         case OP_PRINT_F32: {
             var_value_t* src = get_stack_var(vm, imm1.u32 & 0xFF);
             if (!src) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
             if (src->type != V_FLOAT) { status = VM_ERR_TYPE_MISMATCH; break; }
-            printf("%f", src->val.f32);
+            print_f32(src->val.f32);
             break;
         }
         case OP_PRINTLN:
-            printf("\n");
+            (void)fputc('\n', stdout);
             break;
             
         /* Buffer and String operations are not implemented in this version.
@@ -695,29 +802,52 @@ vm_status_t vm_run(vm_state_t* vm) {
 
 void vm_disassemble_instruction(const vm_state_t* vm, uint32_t pc) {
     if (pc >= vm->program_len || vm->program_len - pc < 4) {
-        printf("0x%04X: <invalid>\n", pc);
+        print_hex16((uint16_t)pc);
+        (void)fputs(": <invalid>\n", stdout);
         return;
     }
     
     instruction_header_t hdr;
     memcpy(&hdr, &vm->program[pc], 4);
-    printf("0x%04X: %s\n", pc, opcode_to_string(hdr.opcode));
+    print_hex16((uint16_t)pc);
+    (void)fputs(": ", stdout);
+    (void)fputs(opcode_to_string(hdr.opcode), stdout);
+    (void)fputc('\n', stdout);
 }
 
 void vm_dump_state(const vm_state_t* vm) {
-    printf("=== VM State ===\n");
-    printf("PC: 0x%04X  SP: %u  Flags: 0x%02X\n", vm->pc, vm->sp, vm->flags);
-    printf("Last Error: %s\n", vm_get_error_string(vm->last_error));
+    (void)fputs("=== VM State ===\n", stdout);
+    (void)fputs("PC: ", stdout);
+    print_hex16((uint16_t)vm->pc);
+    (void)fputs("  SP: ", stdout);
+    print_u32(vm->sp);
+    (void)fputs("  Flags: ", stdout);
+    print_hex8(vm->flags);
+    (void)fputc('\n', stdout);
     
-    printf("\nStack Frame %u:\n", vm->sp);
+    (void)fputs("Last Error: ", stdout);
+    (void)fputs(vm_get_error_string(vm->last_error), stdout);
+    (void)fputc('\n', stdout);
+    
+    (void)fputs("\nStack Frame ", stdout);
+    print_u32(vm->sp);
+    (void)fputs(":\n", stdout);
     for (uint32_t i = 0; i < STACK_VAR_COUNT; i++) {
         var_value_t* v = (var_value_t*)&vm->stack_frames[vm->sp].stack_vars[i];
         if (v->type != V_VOID) {
-            printf("  s%u: %s = ", i, var_type_to_string(v->type));
-            if (v->type == V_I32) printf("%d", v->val.i32);
-            else if (v->type == V_U32) printf("%u", v->val.u32);
-            else if (v->type == V_FLOAT) printf("%f", v->val.f32);
-            printf("\n");
+            (void)fputs("  s", stdout);
+            print_u32(i);
+            (void)fputs(": ", stdout);
+            (void)fputs(var_type_to_string(v->type), stdout);
+            (void)fputs(" = ", stdout);
+            if (v->type == V_I32) {
+                print_i32(v->val.i32);
+            } else if (v->type == V_U32) {
+                print_u32(v->val.u32);
+            } else if (v->type == V_FLOAT) {
+                print_f32(v->val.f32);
+            }
+            (void)fputc('\n', stdout);
         }
     }
 }
