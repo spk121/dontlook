@@ -1,0 +1,242 @@
+/*
+ * Stipple VM Core Implementation
+ * MISRA-C Compliant Virtual Machine
+ */
+
+#include "stipple.h"
+#include <stdio.h>
+#include <string.h>
+#include <math.h>
+
+const char* var_type_to_string(var_value_type_t type) {
+    const char* types[] = {"void", "i32", "u32", "float", "u8x4", "u16x2", 
+                           "unicode", "global_ref", "stack_ref", "buffer_ref", "buffer_pos"};
+    return (type <= V_BUF_POS) ? types[type] : "unknown";
+}
+
+const char* buffer_type_to_string(membuf_type_t type) {
+    const char* types[] = {"void", "u8[256]", "u16[128]", "i32[64]", "u32[64]", "float[64]"};
+    return (type <= MB_FLOAT) ? types[type] : "unknown";
+}
+
+const char* opcode_to_string(opcode_t opcode) {
+    if (opcode >= OP_MAX) return "unknown";
+    const char* ops[OP_MAX] = {
+        [OP_NOP] = "nop", [OP_HALT] = "halt", [OP_JMP] = "jmp", [OP_JZ] = "jz",
+        [OP_JNZ] = "jnz", [OP_JLT] = "jlt", [OP_JGT] = "jgt", [OP_JLE] = "jle",
+        [OP_JGE] = "jge", [OP_CALL] = "call", [OP_RET] = "ret",
+        [OP_LOAD_G] = "load.g", [OP_LOAD_L] = "load.l", [OP_LOAD_S] = "load.s",
+        [OP_LOAD_I_I32] = "load.i32", [OP_LOAD_I_U32] = "load.u32",
+        [OP_LOAD_I_F32] = "load.f32", [OP_LOAD_RET] = "load.ret",
+        [OP_STORE_G] = "store.g", [OP_STORE_L] = "store.l",
+        [OP_STORE_S] = "store.s", [OP_STORE_RET] = "store.ret",
+        [OP_ADD_I32] = "add.i32", [OP_SUB_I32] = "sub.i32",
+        [OP_MUL_I32] = "mul.i32", [OP_DIV_I32] = "div.i32",
+        [OP_MOD_I32] = "mod.i32", [OP_NEG_I32] = "neg.i32",
+        [OP_ADD_U32] = "add.u32", [OP_SUB_U32] = "sub.u32",
+        [OP_MUL_U32] = "mul.u32", [OP_DIV_U32] = "div.u32", [OP_MOD_U32] = "mod.u32",
+        [OP_ADD_F32] = "add.f32", [OP_SUB_F32] = "sub.f32",
+        [OP_MUL_F32] = "mul.f32", [OP_DIV_F32] = "div.f32",
+        [OP_NEG_F32] = "neg.f32", [OP_ABS_F32] = "abs.f32", [OP_SQRT_F32] = "sqrt.f32",
+        [OP_AND_U32] = "and.u32", [OP_OR_U32] = "or.u32",
+        [OP_XOR_U32] = "xor.u32", [OP_NOT_U32] = "not.u32",
+        [OP_SHL_U32] = "shl.u32", [OP_SHR_U32] = "shr.u32",
+        [OP_CMP_I32] = "cmp.i32", [OP_CMP_U32] = "cmp.u32", [OP_CMP_F32] = "cmp.f32",
+        [OP_I32_TO_U32] = "i32.to.u32", [OP_U32_TO_I32] = "u32.to.i32",
+        [OP_I32_TO_F32] = "i32.to.f32", [OP_U32_TO_F32] = "u32.to.f32",
+        [OP_F32_TO_I32] = "f32.to.i32", [OP_F32_TO_U32] = "f32.to.u32",
+        [OP_BUF_READ] = "buf.read", [OP_BUF_WRITE] = "buf.write",
+        [OP_BUF_LEN] = "buf.len", [OP_BUF_CLEAR] = "buf.clear",
+        [OP_STR_CAT] = "str.cat", [OP_STR_COPY] = "str.copy",
+        [OP_STR_LEN] = "str.len", [OP_STR_CMP] = "str.cmp",
+        [OP_STR_CHR] = "str.chr", [OP_STR_SET_CHR] = "str.set_chr",
+        [OP_PRINT_I32] = "print.i32", [OP_PRINT_U32] = "print.u32",
+        [OP_PRINT_F32] = "print.f32", [OP_PRINT_STR] = "print.str",
+        [OP_PRINTLN] = "println",
+        [OP_READ_I32] = "read.i32", [OP_READ_U32] = "read.u32",
+        [OP_READ_F32] = "read.f32", [OP_READ_STR] = "read.str"
+    };
+    return ops[opcode] ? ops[opcode] : "unknown";
+}
+
+const char* vm_get_error_string(vm_status_t status) {
+    const char* errors[] = {
+        [VM_OK] = "Success", [VM_ERR_STACK_OVERFLOW] = "Stack overflow",
+        [VM_ERR_STACK_UNDERFLOW] = "Stack underflow", [VM_ERR_DIV_BY_ZERO] = "Division by zero",
+        [VM_ERR_INVALID_OPCODE] = "Invalid opcode", [VM_ERR_TYPE_MISMATCH] = "Type mismatch",
+        [VM_ERR_BOUNDS] = "Array bounds exceeded", [VM_ERR_INVALID_GLOBAL_IDX] = "Invalid global index",
+        [VM_ERR_INVALID_LOCAL_IDX] = "Invalid local index", [VM_ERR_INVALID_STACK_VAR_IDX] = "Invalid stack var index",
+        [VM_ERR_INVALID_BUFFER_IDX] = "Invalid buffer index", [VM_ERR_INVALID_BUFFER_POS] = "Invalid buffer position",
+        [VM_ERR_INVALID_PC] = "Invalid program counter", [VM_ERR_INVALID_INSTRUCTION] = "Invalid instruction",
+        [VM_ERR_PROGRAM_TOO_LARGE] = "Program too large", [VM_ERR_HALT] = "Program halted"
+    };
+    return (status <= VM_ERR_HALT) ? errors[status] : "Unknown error";
+}
+
+bool validate_global_idx(index_t idx) { return idx < G_VARS_COUNT; }
+bool validate_local_idx(index_t idx) { return idx < STACK_LOCALS_COUNT; }
+bool validate_stack_var_idx(index_t idx) { return idx < STACK_VAR_COUNT; }
+bool validate_buffer_idx(index_t idx) { return idx < G_MEMBUF_COUNT; }
+bool validate_buffer_pos(membuf_type_t type, pos_t pos) {
+    return pos < get_buffer_capacity(type);
+}
+
+void vm_init(vm_state_t* vm) {
+    memset(vm, 0, sizeof(*vm));
+    for (uint32_t i = 0; i < G_VARS_COUNT; i++) vm->g_vars[i].type = V_VOID;
+    for (uint32_t i = 0; i < G_MEMBUF_COUNT; i++) vm->g_membuf[i].type = MB_VOID;
+    for (uint32_t i = 0; i < STACK_DEPTH; i++) {
+        for (uint32_t j = 0; j < STACK_VAR_COUNT; j++)
+            vm->stack_frames[i].stack_vars[j].type = V_VOID;
+        for (uint32_t j = 0; j < STACK_LOCALS_COUNT; j++)
+            vm->stack_frames[i].locals[j].type = V_VOID;
+        vm->stack_frames[i].ret_val.type = V_VOID;
+    }
+}
+
+void vm_reset(vm_state_t* vm) { vm_init(vm); }
+
+vm_status_t vm_load_program(vm_state_t* vm, const uint8_t* program, uint32_t len) {
+    if (len > PROGRAM_MAX_SIZE) {
+        vm->last_error = VM_ERR_PROGRAM_TOO_LARGE;
+        return VM_ERR_PROGRAM_TOO_LARGE;
+    }
+    memcpy(vm->program, program, len);
+    vm->program_len = len;
+    vm->pc = 0;
+    vm->last_error = VM_OK;
+    return VM_OK;
+}
+
+static inline var_value_t* get_stack_var(vm_state_t* vm, uint8_t idx) {
+    return (idx < STACK_VAR_COUNT) ? &vm->stack_frames[vm->sp].stack_vars[idx] : NULL;
+}
+
+static inline var_value_t* get_local_var(vm_state_t* vm, uint32_t idx) {
+    return (idx < STACK_LOCALS_COUNT) ? &vm->stack_frames[vm->sp].locals[idx] : NULL;
+}
+
+static inline var_value_t* get_global_var(vm_state_t* vm, uint32_t idx) {
+    return (idx < G_VARS_COUNT) ? &vm->g_vars[idx] : NULL;
+}
+
+/* Minimal instruction execution - implements only key instructions */
+vm_status_t vm_step(vm_state_t* vm) {
+    if (vm->pc >= vm->program_len || vm->program_len - vm->pc < 4) {
+        vm->last_error = VM_ERR_INVALID_PC;
+        return VM_ERR_INVALID_PC;
+    }
+    
+    instruction_header_t hdr;
+    memcpy(&hdr, &vm->program[vm->pc], 4);
+    
+    uint8_t payload_len = INSTR_PAYLOAD_LEN(hdr);
+    uint32_t instr_size = 4 + (payload_len * 4);
+    
+    if (vm->pc + instr_size > vm->program_len || payload_len > 3) {
+        vm->last_error = VM_ERR_INVALID_INSTRUCTION;
+        return VM_ERR_INVALID_INSTRUCTION;
+    }
+    
+    instruction_payload_t imm1, imm2, imm3;
+    if (payload_len >= 1) memcpy(&imm1, &vm->program[vm->pc + 4], 4);
+    if (payload_len >= 2) memcpy(&imm2, &vm->program[vm->pc + 8], 4);
+    if (payload_len >= 3) memcpy(&imm3, &vm->program[vm->pc + 12], 4);
+    
+    uint32_t next_pc = vm->pc + instr_size;
+    vm_status_t status = VM_OK;
+    
+    switch (hdr.opcode) {
+        case OP_NOP:
+            break;
+        case OP_HALT:
+            status = VM_ERR_HALT;
+            break;
+        case OP_LOAD_I_I32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            if (!dest) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            dest->type = V_I32;
+            dest->val.i32 = imm1.i32;
+            break;
+        }
+        case OP_LOAD_I_U32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            if (!dest) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            dest->type = V_U32;
+            dest->val.u32 = imm1.u32;
+            break;
+        }
+        case OP_LOAD_I_F32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            if (!dest) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            dest->type = V_FLOAT;
+            dest->val.f32 = imm1.f32;
+            break;
+        }
+        case OP_ADD_I32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            var_value_t* src1 = get_stack_var(vm, imm1.u32 & 0xFF);
+            var_value_t* src2 = get_stack_var(vm, imm2.u32 & 0xFF);
+            if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (src1->type != V_I32 || src2->type != V_I32) { status = VM_ERR_TYPE_MISMATCH; break; }
+            dest->type = V_I32;
+            dest->val.i32 = src1->val.i32 + src2->val.i32;
+            break;
+        }
+        case OP_PRINT_I32: {
+            var_value_t* src = get_stack_var(vm, imm1.u32 & 0xFF);
+            if (!src) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (src->type != V_I32) { status = VM_ERR_TYPE_MISMATCH; break; }
+            printf("%d", src->val.i32);
+            break;
+        }
+        case OP_PRINTLN:
+            printf("\n");
+            break;
+        default:
+            status = VM_ERR_INVALID_OPCODE;
+            break;
+    }
+    
+    if (status == VM_OK) {
+        vm->pc = next_pc;
+    }
+    
+    vm->last_error = status;
+    return status;
+}
+
+vm_status_t vm_run(vm_state_t* vm) {
+    vm_status_t status;
+    while ((status = vm_step(vm)) == VM_OK) {}
+    return (status == VM_ERR_HALT) ? VM_OK : status;
+}
+
+void vm_disassemble_instruction(const vm_state_t* vm, uint32_t pc) {
+    if (pc >= vm->program_len || vm->program_len - pc < 4) {
+        printf("0x%04X: <invalid>\n", pc);
+        return;
+    }
+    
+    instruction_header_t hdr;
+    memcpy(&hdr, &vm->program[pc], 4);
+    printf("0x%04X: %s\n", pc, opcode_to_string(hdr.opcode));
+}
+
+void vm_dump_state(const vm_state_t* vm) {
+    printf("=== VM State ===\n");
+    printf("PC: 0x%04X  SP: %u  Flags: 0x%02X\n", vm->pc, vm->sp, vm->flags);
+    printf("Last Error: %s\n", vm_get_error_string(vm->last_error));
+    
+    printf("\nStack Frame %u:\n", vm->sp);
+    for (uint32_t i = 0; i < STACK_VAR_COUNT; i++) {
+        var_value_t* v = (var_value_t*)&vm->stack_frames[vm->sp].stack_vars[i];
+        if (v->type != V_VOID) {
+            printf("  s%u: %s = ", i, var_type_to_string(v->type));
+            if (v->type == V_I32) printf("%d", v->val.i32);
+            else if (v->type == V_U32) printf("%u", v->val.u32);
+            else if (v->type == V_FLOAT) printf("%f", v->val.f32);
+            printf("\n");
+        }
+    }
+}
