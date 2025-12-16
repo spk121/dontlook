@@ -8,6 +8,7 @@
 #include <string.h>
 #include <math.h>
 #include <stdint.h>  /* For INT32_MIN */
+#include <inttypes.h>  /* For SCNd32, SCNu32 format specifiers */
 
 /* ============================================================================
  * Helper Functions - MISRA-C Compliant I/O (no printf/fprintf)
@@ -923,19 +924,40 @@ vm_status_t vm_step(vm_state_t* vm) {
                 len2++;
             }
             
+            /* Handle buffer aliasing: if dest overlaps with src1 or src2, use a temp buffer */
+            uint8_t tmp[MEMBUF_U8_COUNT];
+            uint8_t* out_buf;
+            if (dest_idx == src1_idx || dest_idx == src2_idx) {
+                out_buf = tmp;
+            } else {
+                out_buf = dest_buf->buf.u8x256;
+            }
+            
             /* Copy first string */
             uint32_t i;
+            uint32_t j;
             for (i = 0; i < len1 && i < MEMBUF_U8_COUNT - 1; i++) {
-                dest_buf->buf.u8x256[i] = src1_buf->buf.u8x256[i];
+                out_buf[i] = src1_buf->buf.u8x256[i];
             }
             
             /* Append second string */
-            for (uint32_t j = 0; j < len2 && i < MEMBUF_U8_COUNT - 1; j++, i++) {
-                dest_buf->buf.u8x256[i] = src2_buf->buf.u8x256[j];
+            for (j = 0; j < len2 && i < MEMBUF_U8_COUNT - 1; j++, i++) {
+                out_buf[i] = src2_buf->buf.u8x256[j];
             }
             
             /* Null terminate */
-            dest_buf->buf.u8x256[i] = 0;
+            out_buf[i] = 0;
+            
+            /* If we used a temp buffer, copy result to dest */
+            if (out_buf == tmp) {
+                for (uint32_t k = 0; k <= i && k < MEMBUF_U8_COUNT; k++) {
+                    dest_buf->buf.u8x256[k] = tmp[k];
+                }
+                /* Ensure null termination */
+                if (i >= MEMBUF_U8_COUNT) {
+                    dest_buf->buf.u8x256[MEMBUF_U8_COUNT - 1] = 0;
+                }
+            }
             break;
         }
         
@@ -945,6 +967,11 @@ vm_status_t vm_step(vm_state_t* vm) {
             
             if (!validate_buffer_idx(dest_idx) || !validate_buffer_idx(src_idx)) {
                 status = VM_ERR_INVALID_BUFFER_IDX; break;
+            }
+            
+            /* Optimize: if copying to same buffer, it's a no-op */
+            if (dest_idx == src_idx) {
+                break;
             }
             
             membuf_t* dest_buf = &vm->g_membuf[dest_idx];
@@ -1089,18 +1116,22 @@ vm_status_t vm_step(vm_state_t* vm) {
             var_value_t* dest = get_stack_var(vm, hdr.operand);
             if (!dest) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
             
-            /* Safe: scanf with %d reads into fixed-size int32_t variable, no buffer overflow risk */
+            /* Use SCNd32 for portable scanf with int32_t */
             int32_t value;
-            if (scanf("%d", &value) == 1) {
+            if (scanf("%" SCNd32, &value) == 1) {
                 dest->type = V_I32;
                 dest->val.i32 = value;
             } else {
                 /* On read failure, set to 0 */
                 dest->type = V_I32;
                 dest->val.i32 = 0;
-                /* Clear input buffer */
+                /* Clear input buffer with limit to prevent indefinite blocking */
                 int c;
-                while ((c = getchar()) != '\n' && c != EOF) {}
+                uint32_t clear_count = 0;
+                const uint32_t MAX_CLEAR = 1024;
+                while (clear_count < MAX_CLEAR && (c = getchar()) != '\n' && c != EOF) {
+                    clear_count++;
+                }
             }
             break;
         }
@@ -1109,18 +1140,22 @@ vm_status_t vm_step(vm_state_t* vm) {
             var_value_t* dest = get_stack_var(vm, hdr.operand);
             if (!dest) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
             
-            /* Safe: scanf with %u reads into fixed-size uint32_t variable, no buffer overflow risk */
+            /* Use SCNu32 for portable scanf with uint32_t */
             uint32_t value;
-            if (scanf("%u", &value) == 1) {
+            if (scanf("%" SCNu32, &value) == 1) {
                 dest->type = V_U32;
                 dest->val.u32 = value;
             } else {
                 /* On read failure, set to 0 */
                 dest->type = V_U32;
                 dest->val.u32 = 0;
-                /* Clear input buffer */
+                /* Clear input buffer with limit to prevent indefinite blocking */
                 int c;
-                while ((c = getchar()) != '\n' && c != EOF) {}
+                uint32_t clear_count = 0;
+                const uint32_t MAX_CLEAR = 1024;
+                while (clear_count < MAX_CLEAR && (c = getchar()) != '\n' && c != EOF) {
+                    clear_count++;
+                }
             }
             break;
         }
@@ -1138,9 +1173,13 @@ vm_status_t vm_step(vm_state_t* vm) {
                 /* On read failure, set to 0.0 */
                 dest->type = V_FLOAT;
                 dest->val.f32 = 0.0f;
-                /* Clear input buffer */
+                /* Clear input buffer with limit to prevent indefinite blocking */
                 int c;
-                while ((c = getchar()) != '\n' && c != EOF) {}
+                uint32_t clear_count = 0;
+                const uint32_t MAX_CLEAR = 1024;
+                while (clear_count < MAX_CLEAR && (c = getchar()) != '\n' && c != EOF) {
+                    clear_count++;
+                }
             }
             break;
         }
@@ -1166,6 +1205,11 @@ vm_status_t vm_step(vm_state_t* vm) {
             
             /* Null terminate */
             buf->buf.u8x256[i] = 0;
+            
+            /* If buffer is full and we haven't hit newline, discard remaining input */
+            if (i == MEMBUF_U8_COUNT - 1 && c != '\n' && c != EOF) {
+                while ((c = getchar()) != '\n' && c != EOF) {}
+            }
             break;
         }
         
