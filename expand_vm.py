@@ -4,8 +4,6 @@ Expand vm.c with complete instruction set implementation
 This script reads the current vm.c and adds all remaining instructions
 """
 
-import os
-
 # Read the current vm.c
 with open('src/vm.c', 'r') as f:
     lines = f.readlines()

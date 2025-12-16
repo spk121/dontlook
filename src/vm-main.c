@@ -20,35 +20,71 @@ static uint8_t* load_file(const char* filename, uint32_t* size) {
         return NULL;
     }
     
-    /* Get file size */
-    fseek(f, 0, SEEK_END);
-    long fsize = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    
-    if (fsize < 0 || fsize > PROGRAM_MAX_SIZE) {
-        fprintf(stderr, "Error: Invalid file size\n");
-        fclose(f);
-        return NULL;
-    }
-    
-    /* Allocate and read */
-    uint8_t* buffer = (uint8_t*)malloc((size_t)fsize);
+    /* Read file in chunks for portability */
+    const size_t CHUNK_SIZE = 4096;
+    size_t capacity = CHUNK_SIZE;
+    size_t total_read = 0;
+    uint8_t* buffer = (uint8_t*)malloc(capacity);
     if (!buffer) {
         fprintf(stderr, "Error: Out of memory\n");
         fclose(f);
         return NULL;
     }
-    
-    size_t read_size = fread(buffer, 1, (size_t)fsize, f);
+
+    while (1) {
+        if (total_read == capacity) {
+            if (capacity >= PROGRAM_MAX_SIZE) {
+                fprintf(stderr, "Error: File too large\n");
+                free(buffer);
+                fclose(f);
+                return NULL;
+            }
+            size_t new_capacity = capacity * 2;
+            if (new_capacity > PROGRAM_MAX_SIZE) {
+                new_capacity = PROGRAM_MAX_SIZE;
+            }
+            uint8_t* new_buffer = (uint8_t*)realloc(buffer, new_capacity);
+            if (!new_buffer) {
+                fprintf(stderr, "Error: Out of memory\n");
+                free(buffer);
+                fclose(f);
+                return NULL;
+            }
+            buffer = new_buffer;
+            capacity = new_capacity;
+        }
+        size_t to_read = capacity - total_read;
+        if (to_read > CHUNK_SIZE) {
+            to_read = CHUNK_SIZE;
+        }
+        size_t n = fread(buffer + total_read, 1, to_read, f);
+        if (n == 0) {
+            if (feof(f)) {
+                break;
+            } else {
+                fprintf(stderr, "Error: Failed to read file\n");
+                free(buffer);
+                fclose(f);
+                return NULL;
+            }
+        }
+        total_read += n;
+        if (total_read > PROGRAM_MAX_SIZE) {
+            fprintf(stderr, "Error: File too large\n");
+            free(buffer);
+            fclose(f);
+            return NULL;
+        }
+    }
     fclose(f);
-    
-    if (read_size != (size_t)fsize) {
-        fprintf(stderr, "Error: Failed to read file\n");
+
+    if (total_read == 0) {
+        fprintf(stderr, "Error: File is empty\n");
         free(buffer);
         return NULL;
     }
-    
-    *size = (uint32_t)fsize;
+
+    *size = (uint32_t)total_read;
     return buffer;
 }
 
