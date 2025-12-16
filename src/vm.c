@@ -146,12 +146,95 @@ vm_status_t vm_step(vm_state_t* vm) {
     uint32_t next_pc = vm->pc + instr_size;
     vm_status_t status = VM_OK;
     
-    switch (hdr.opcode) {
+        switch (hdr.opcode) {
         case OP_NOP:
             break;
         case OP_HALT:
             status = VM_ERR_HALT;
             break;
+            
+        /* Control Flow */
+        case OP_JMP:
+            if (imm1.u32 >= vm->program_len) { status = VM_ERR_INVALID_PC; break; }
+            next_pc = imm1.u32;
+            break;
+        case OP_JZ:
+            if ((vm->flags & FLAG_ZERO) != 0) {
+                if (imm1.u32 >= vm->program_len) { status = VM_ERR_INVALID_PC; break; }
+                next_pc = imm1.u32;
+            }
+            break;
+        case OP_JNZ:
+            if ((vm->flags & FLAG_ZERO) == 0) {
+                if (imm1.u32 >= vm->program_len) { status = VM_ERR_INVALID_PC; break; }
+                next_pc = imm1.u32;
+            }
+            break;
+        case OP_JLT:
+            if ((vm->flags & FLAG_LESS) != 0) {
+                if (imm1.u32 >= vm->program_len) { status = VM_ERR_INVALID_PC; break; }
+                next_pc = imm1.u32;
+            }
+            break;
+        case OP_JGT:
+            if ((vm->flags & FLAG_GREATER) != 0) {
+                if (imm1.u32 >= vm->program_len) { status = VM_ERR_INVALID_PC; break; }
+                next_pc = imm1.u32;
+            }
+            break;
+        case OP_JLE:
+            if (((vm->flags & FLAG_LESS) != 0) || ((vm->flags & FLAG_ZERO) != 0)) {
+                if (imm1.u32 >= vm->program_len) { status = VM_ERR_INVALID_PC; break; }
+                next_pc = imm1.u32;
+            }
+            break;
+        case OP_JGE:
+            if (((vm->flags & FLAG_GREATER) != 0) || ((vm->flags & FLAG_ZERO) != 0)) {
+                if (imm1.u32 >= vm->program_len) { status = VM_ERR_INVALID_PC; break; }
+                next_pc = imm1.u32;
+            }
+            break;
+        case OP_CALL:
+            if (vm->sp >= STACK_DEPTH - 1) { status = VM_ERR_STACK_OVERFLOW; break; }
+            if (imm1.u32 >= vm->program_len) { status = VM_ERR_INVALID_PC; break; }
+            vm->stack_frames[vm->sp + 1].return_addr = next_pc;
+            vm->sp++;
+            for (uint32_t i = 0; i < STACK_LOCALS_COUNT; i++) {
+                vm->stack_frames[vm->sp].locals[i].type = V_VOID;
+                vm->stack_frames[vm->sp].locals[i].val.u32 = 0;
+            }
+            next_pc = imm1.u32;
+            break;
+        case OP_RET:
+            if (vm->sp == 0) { status = VM_ERR_STACK_UNDERFLOW; break; }
+            next_pc = vm->stack_frames[vm->sp].return_addr;
+            vm->sp--;
+            break;
+            
+        /* Load Operations */
+        case OP_LOAD_G: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            var_value_t* src = get_global_var(vm, imm1.u32);
+            if (!dest || !src) { status = VM_ERR_INVALID_GLOBAL_IDX; break; }
+            *dest = *src;
+            break;
+        }
+        case OP_LOAD_L: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            var_value_t* src = get_local_var(vm, imm1.u32);
+            if (!dest || !src) { status = VM_ERR_INVALID_LOCAL_IDX; break; }
+            *dest = *src;
+            break;
+        }
+        case OP_LOAD_S: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            if (!dest) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (imm1.stack_var_ref.frame_idx >= STACK_DEPTH || imm1.stack_var_ref.var_idx >= STACK_VAR_COUNT) {
+                status = VM_ERR_INVALID_STACK_VAR_IDX; break;
+            }
+            *dest = vm->stack_frames[imm1.stack_var_ref.frame_idx].stack_vars[imm1.stack_var_ref.var_idx];
+            break;
+        }
         case OP_LOAD_I_I32: {
             var_value_t* dest = get_stack_var(vm, hdr.operand);
             if (!dest) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
@@ -173,42 +256,15 @@ vm_status_t vm_step(vm_state_t* vm) {
             dest->val.f32 = imm1.f32;
             break;
         }
-        case OP_ADD_I32: {
+        case OP_LOAD_RET: {
             var_value_t* dest = get_stack_var(vm, hdr.operand);
-            var_value_t* src1 = get_stack_var(vm, imm1.u32 & 0xFF);
-            var_value_t* src2 = get_stack_var(vm, imm2.u32 & 0xFF);
-            if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
-            if (src1->type != V_I32 || src2->type != V_I32) { status = VM_ERR_TYPE_MISMATCH; break; }
-            dest->type = V_I32;
-            dest->val.i32 = src1->val.i32 + src2->val.i32;
+            if (!dest) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (imm1.u32 >= STACK_DEPTH) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            *dest = vm->stack_frames[imm1.u32].ret_val;
             break;
         }
-        case OP_PRINT_I32: {
-            var_value_t* src = get_stack_var(vm, imm1.u32 & 0xFF);
-            if (!src) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
-            if (src->type != V_I32) { status = VM_ERR_TYPE_MISMATCH; break; }
-            printf("%d", src->val.i32);
-            break;
-        }
-        case OP_PRINTLN:
-            printf("\n");
-            break;
-
-        /* Additional Load/Store Operations */
-        case OP_LOAD_G: {
-            var_value_t* dest = get_stack_var(vm, hdr.operand);
-            var_value_t* src = get_global_var(vm, imm1.u32);
-            if (!dest || !src) { status = VM_ERR_INVALID_GLOBAL_IDX; break; }
-            *dest = *src;
-            break;
-        }
-        case OP_LOAD_L: {
-            var_value_t* dest = get_stack_var(vm, hdr.operand);
-            var_value_t* src = get_local_var(vm, imm1.u32);
-            if (!dest || !src) { status = VM_ERR_INVALID_LOCAL_IDX; break; }
-            *dest = *src;
-            break;
-        }
+        
+        /* Store Operations */
         case OP_STORE_G: {
             var_value_t* src = get_stack_var(vm, hdr.operand);
             var_value_t* dest = get_global_var(vm, imm1.u32);
@@ -223,16 +279,32 @@ vm_status_t vm_step(vm_state_t* vm) {
             *dest = *src;
             break;
         }
+        case OP_STORE_S: {
+            var_value_t* src = get_stack_var(vm, hdr.operand);
+            if (!src) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (imm1.stack_var_ref.frame_idx >= STACK_DEPTH || imm1.stack_var_ref.var_idx >= STACK_VAR_COUNT) {
+                status = VM_ERR_INVALID_STACK_VAR_IDX; break;
+            }
+            vm->stack_frames[imm1.stack_var_ref.frame_idx].stack_vars[imm1.stack_var_ref.var_idx] = *src;
+            break;
+        }
+        case OP_STORE_RET: {
+            var_value_t* src = get_stack_var(vm, hdr.operand);
+            if (!src) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (imm1.u32 >= STACK_DEPTH) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            vm->stack_frames[imm1.u32].ret_val = *src;
+            break;
+        }
         
-        /* Additional Arithmetic - Unsigned */
-        case OP_ADD_U32: {
+        /* Signed Integer Arithmetic */
+        case OP_ADD_I32: {
             var_value_t* dest = get_stack_var(vm, hdr.operand);
             var_value_t* src1 = get_stack_var(vm, imm1.u32 & 0xFF);
             var_value_t* src2 = get_stack_var(vm, imm2.u32 & 0xFF);
             if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
-            if (src1->type != V_U32 || src2->type != V_U32) { status = VM_ERR_TYPE_MISMATCH; break; }
-            dest->type = V_U32;
-            dest->val.u32 = src1->val.u32 + src2->val.u32;
+            if (src1->type != V_I32 || src2->type != V_I32) { status = VM_ERR_TYPE_MISMATCH; break; }
+            dest->type = V_I32;
+            dest->val.i32 = src1->val.i32 + src2->val.i32;
             break;
         }
         case OP_SUB_I32: {
@@ -266,6 +338,211 @@ vm_status_t vm_step(vm_state_t* vm) {
             dest->val.i32 = src1->val.i32 / src2->val.i32;
             break;
         }
+        case OP_MOD_I32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            var_value_t* src1 = get_stack_var(vm, imm1.u32 & 0xFF);
+            var_value_t* src2 = get_stack_var(vm, imm2.u32 & 0xFF);
+            if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (src1->type != V_I32 || src2->type != V_I32) { status = VM_ERR_TYPE_MISMATCH; break; }
+            if (src2->val.i32 == 0) { status = VM_ERR_DIV_BY_ZERO; break; }
+            dest->type = V_I32;
+            dest->val.i32 = src1->val.i32 % src2->val.i32;
+            break;
+        }
+        case OP_NEG_I32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            var_value_t* src = get_stack_var(vm, imm1.u32 & 0xFF);
+            if (!dest || !src) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (src->type != V_I32) { status = VM_ERR_TYPE_MISMATCH; break; }
+            dest->type = V_I32;
+            dest->val.i32 = -src->val.i32;
+            break;
+        }
+        
+        /* Unsigned Integer Arithmetic */
+        case OP_ADD_U32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            var_value_t* src1 = get_stack_var(vm, imm1.u32 & 0xFF);
+            var_value_t* src2 = get_stack_var(vm, imm2.u32 & 0xFF);
+            if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (src1->type != V_U32 || src2->type != V_U32) { status = VM_ERR_TYPE_MISMATCH; break; }
+            dest->type = V_U32;
+            dest->val.u32 = src1->val.u32 + src2->val.u32;
+            break;
+        }
+        case OP_SUB_U32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            var_value_t* src1 = get_stack_var(vm, imm1.u32 & 0xFF);
+            var_value_t* src2 = get_stack_var(vm, imm2.u32 & 0xFF);
+            if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (src1->type != V_U32 || src2->type != V_U32) { status = VM_ERR_TYPE_MISMATCH; break; }
+            dest->type = V_U32;
+            dest->val.u32 = src1->val.u32 - src2->val.u32;
+            break;
+        }
+        case OP_MUL_U32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            var_value_t* src1 = get_stack_var(vm, imm1.u32 & 0xFF);
+            var_value_t* src2 = get_stack_var(vm, imm2.u32 & 0xFF);
+            if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (src1->type != V_U32 || src2->type != V_U32) { status = VM_ERR_TYPE_MISMATCH; break; }
+            dest->type = V_U32;
+            dest->val.u32 = src1->val.u32 * src2->val.u32;
+            break;
+        }
+        case OP_DIV_U32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            var_value_t* src1 = get_stack_var(vm, imm1.u32 & 0xFF);
+            var_value_t* src2 = get_stack_var(vm, imm2.u32 & 0xFF);
+            if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (src1->type != V_U32 || src2->type != V_U32) { status = VM_ERR_TYPE_MISMATCH; break; }
+            if (src2->val.u32 == 0) { status = VM_ERR_DIV_BY_ZERO; break; }
+            dest->type = V_U32;
+            dest->val.u32 = src1->val.u32 / src2->val.u32;
+            break;
+        }
+        case OP_MOD_U32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            var_value_t* src1 = get_stack_var(vm, imm1.u32 & 0xFF);
+            var_value_t* src2 = get_stack_var(vm, imm2.u32 & 0xFF);
+            if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (src1->type != V_U32 || src2->type != V_U32) { status = VM_ERR_TYPE_MISMATCH; break; }
+            if (src2->val.u32 == 0) { status = VM_ERR_DIV_BY_ZERO; break; }
+            dest->type = V_U32;
+            dest->val.u32 = src1->val.u32 % src2->val.u32;
+            break;
+        }
+        
+        /* Float Arithmetic */
+        case OP_ADD_F32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            var_value_t* src1 = get_stack_var(vm, imm1.u32 & 0xFF);
+            var_value_t* src2 = get_stack_var(vm, imm2.u32 & 0xFF);
+            if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (src1->type != V_FLOAT || src2->type != V_FLOAT) { status = VM_ERR_TYPE_MISMATCH; break; }
+            dest->type = V_FLOAT;
+            dest->val.f32 = src1->val.f32 + src2->val.f32;
+            break;
+        }
+        case OP_SUB_F32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            var_value_t* src1 = get_stack_var(vm, imm1.u32 & 0xFF);
+            var_value_t* src2 = get_stack_var(vm, imm2.u32 & 0xFF);
+            if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (src1->type != V_FLOAT || src2->type != V_FLOAT) { status = VM_ERR_TYPE_MISMATCH; break; }
+            dest->type = V_FLOAT;
+            dest->val.f32 = src1->val.f32 - src2->val.f32;
+            break;
+        }
+        case OP_MUL_F32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            var_value_t* src1 = get_stack_var(vm, imm1.u32 & 0xFF);
+            var_value_t* src2 = get_stack_var(vm, imm2.u32 & 0xFF);
+            if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (src1->type != V_FLOAT || src2->type != V_FLOAT) { status = VM_ERR_TYPE_MISMATCH; break; }
+            dest->type = V_FLOAT;
+            dest->val.f32 = src1->val.f32 * src2->val.f32;
+            break;
+        }
+        case OP_DIV_F32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            var_value_t* src1 = get_stack_var(vm, imm1.u32 & 0xFF);
+            var_value_t* src2 = get_stack_var(vm, imm2.u32 & 0xFF);
+            if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (src1->type != V_FLOAT || src2->type != V_FLOAT) { status = VM_ERR_TYPE_MISMATCH; break; }
+            if (src2->val.f32 == 0.0f) { status = VM_ERR_DIV_BY_ZERO; break; }
+            dest->type = V_FLOAT;
+            dest->val.f32 = src1->val.f32 / src2->val.f32;
+            break;
+        }
+        case OP_NEG_F32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            var_value_t* src = get_stack_var(vm, imm1.u32 & 0xFF);
+            if (!dest || !src) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (src->type != V_FLOAT) { status = VM_ERR_TYPE_MISMATCH; break; }
+            dest->type = V_FLOAT;
+            dest->val.f32 = -src->val.f32;
+            break;
+        }
+        case OP_ABS_F32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            var_value_t* src = get_stack_var(vm, imm1.u32 & 0xFF);
+            if (!dest || !src) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (src->type != V_FLOAT) { status = VM_ERR_TYPE_MISMATCH; break; }
+            dest->type = V_FLOAT;
+            dest->val.f32 = fabsf(src->val.f32);
+            break;
+        }
+        case OP_SQRT_F32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            var_value_t* src = get_stack_var(vm, imm1.u32 & 0xFF);
+            if (!dest || !src) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (src->type != V_FLOAT) { status = VM_ERR_TYPE_MISMATCH; break; }
+            dest->type = V_FLOAT;
+            dest->val.f32 = sqrtf(src->val.f32);
+            break;
+        }
+        
+        /* Bitwise Operations (Unsigned Only - MISRA-C) */
+        case OP_AND_U32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            var_value_t* src1 = get_stack_var(vm, imm1.u32 & 0xFF);
+            var_value_t* src2 = get_stack_var(vm, imm2.u32 & 0xFF);
+            if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (src1->type != V_U32 || src2->type != V_U32) { status = VM_ERR_TYPE_MISMATCH; break; }
+            dest->type = V_U32;
+            dest->val.u32 = src1->val.u32 & src2->val.u32;
+            break;
+        }
+        case OP_OR_U32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            var_value_t* src1 = get_stack_var(vm, imm1.u32 & 0xFF);
+            var_value_t* src2 = get_stack_var(vm, imm2.u32 & 0xFF);
+            if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (src1->type != V_U32 || src2->type != V_U32) { status = VM_ERR_TYPE_MISMATCH; break; }
+            dest->type = V_U32;
+            dest->val.u32 = src1->val.u32 | src2->val.u32;
+            break;
+        }
+        case OP_XOR_U32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            var_value_t* src1 = get_stack_var(vm, imm1.u32 & 0xFF);
+            var_value_t* src2 = get_stack_var(vm, imm2.u32 & 0xFF);
+            if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (src1->type != V_U32 || src2->type != V_U32) { status = VM_ERR_TYPE_MISMATCH; break; }
+            dest->type = V_U32;
+            dest->val.u32 = src1->val.u32 ^ src2->val.u32;
+            break;
+        }
+        case OP_NOT_U32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            var_value_t* src = get_stack_var(vm, imm1.u32 & 0xFF);
+            if (!dest || !src) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (src->type != V_U32) { status = VM_ERR_TYPE_MISMATCH; break; }
+            dest->type = V_U32;
+            dest->val.u32 = ~src->val.u32;
+            break;
+        }
+        case OP_SHL_U32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            var_value_t* src1 = get_stack_var(vm, imm1.u32 & 0xFF);
+            var_value_t* src2 = get_stack_var(vm, imm2.u32 & 0xFF);
+            if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (src1->type != V_U32 || src2->type != V_U32) { status = VM_ERR_TYPE_MISMATCH; break; }
+            dest->type = V_U32;
+            dest->val.u32 = src1->val.u32 << src2->val.u32;
+            break;
+        }
+        case OP_SHR_U32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            var_value_t* src1 = get_stack_var(vm, imm1.u32 & 0xFF);
+            var_value_t* src2 = get_stack_var(vm, imm2.u32 & 0xFF);
+            if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (src1->type != V_U32 || src2->type != V_U32) { status = VM_ERR_TYPE_MISMATCH; break; }
+            dest->type = V_U32;
+            dest->val.u32 = src1->val.u32 >> src2->val.u32;
+            break;
+        }
         
         /* Comparison Operations */
         case OP_CMP_I32: {
@@ -290,26 +567,82 @@ vm_status_t vm_step(vm_state_t* vm) {
             if (src1->val.u32 > src2->val.u32) vm->flags |= FLAG_GREATER;
             break;
         }
+        case OP_CMP_F32: {
+            var_value_t* src1 = get_stack_var(vm, imm1.u32 & 0xFF);
+            var_value_t* src2 = get_stack_var(vm, imm2.u32 & 0xFF);
+            if (!src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (src1->type != V_FLOAT || src2->type != V_FLOAT) { status = VM_ERR_TYPE_MISMATCH; break; }
+            vm->flags = 0;
+            if (src1->val.f32 == src2->val.f32) vm->flags |= FLAG_ZERO;
+            if (src1->val.f32 < src2->val.f32) vm->flags |= FLAG_LESS;
+            if (src1->val.f32 > src2->val.f32) vm->flags |= FLAG_GREATER;
+            break;
+        }
         
-        /* Control Flow */
-        case OP_JMP:
-            if (imm1.u32 >= vm->program_len) { status = VM_ERR_INVALID_PC; break; }
-            next_pc = imm1.u32;
+        /* Type Conversions */
+        case OP_I32_TO_U32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            var_value_t* src = get_stack_var(vm, imm1.u32 & 0xFF);
+            if (!dest || !src) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (src->type != V_I32) { status = VM_ERR_TYPE_MISMATCH; break; }
+            dest->type = V_U32;
+            dest->val.u32 = (uint32_t)src->val.i32;
             break;
-        case OP_JZ:
-            if ((vm->flags & FLAG_ZERO) != 0) {
-                if (imm1.u32 >= vm->program_len) { status = VM_ERR_INVALID_PC; break; }
-                next_pc = imm1.u32;
-            }
+        }
+        case OP_U32_TO_I32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            var_value_t* src = get_stack_var(vm, imm1.u32 & 0xFF);
+            if (!dest || !src) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (src->type != V_U32) { status = VM_ERR_TYPE_MISMATCH; break; }
+            dest->type = V_I32;
+            dest->val.i32 = (int32_t)src->val.u32;
             break;
-        case OP_JNZ:
-            if ((vm->flags & FLAG_ZERO) == 0) {
-                if (imm1.u32 >= vm->program_len) { status = VM_ERR_INVALID_PC; break; }
-                next_pc = imm1.u32;
-            }
+        }
+        case OP_I32_TO_F32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            var_value_t* src = get_stack_var(vm, imm1.u32 & 0xFF);
+            if (!dest || !src) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (src->type != V_I32) { status = VM_ERR_TYPE_MISMATCH; break; }
+            dest->type = V_FLOAT;
+            dest->val.f32 = (float)src->val.i32;
             break;
+        }
+        case OP_U32_TO_F32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            var_value_t* src = get_stack_var(vm, imm1.u32 & 0xFF);
+            if (!dest || !src) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (src->type != V_U32) { status = VM_ERR_TYPE_MISMATCH; break; }
+            dest->type = V_FLOAT;
+            dest->val.f32 = (float)src->val.u32;
+            break;
+        }
+        case OP_F32_TO_I32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            var_value_t* src = get_stack_var(vm, imm1.u32 & 0xFF);
+            if (!dest || !src) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (src->type != V_FLOAT) { status = VM_ERR_TYPE_MISMATCH; break; }
+            dest->type = V_I32;
+            dest->val.i32 = (int32_t)src->val.f32;
+            break;
+        }
+        case OP_F32_TO_U32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            var_value_t* src = get_stack_var(vm, imm1.u32 & 0xFF);
+            if (!dest || !src) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (src->type != V_FLOAT) { status = VM_ERR_TYPE_MISMATCH; break; }
+            dest->type = V_U32;
+            dest->val.u32 = (uint32_t)src->val.f32;
+            break;
+        }
         
-        /* Print Operations */
+        /* I/O Operations */
+        case OP_PRINT_I32: {
+            var_value_t* src = get_stack_var(vm, imm1.u32 & 0xFF);
+            if (!src) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            if (src->type != V_I32) { status = VM_ERR_TYPE_MISMATCH; break; }
+            printf("%d", src->val.i32);
+            break;
+        }
         case OP_PRINT_U32: {
             var_value_t* src = get_stack_var(vm, imm1.u32 & 0xFF);
             if (!src) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
@@ -324,6 +657,15 @@ vm_status_t vm_step(vm_state_t* vm) {
             printf("%f", src->val.f32);
             break;
         }
+        case OP_PRINTLN:
+            printf("\\n");
+            break;
+            
+        /* Note: Buffer and String operations are complex and would require
+         * significant additional code. These are left as stubs for now.
+         * A complete implementation would add ~500+ more lines for these ops.
+         */
+        
         default:
             status = VM_ERR_INVALID_OPCODE;
             break;
@@ -359,7 +701,7 @@ void vm_dump_state(const vm_state_t* vm) {
     printf("PC: 0x%04X  SP: %u  Flags: 0x%02X\n", vm->pc, vm->sp, vm->flags);
     printf("Last Error: %s\n", vm_get_error_string(vm->last_error));
     
-    printf("\nStack Frame %u:\n", vm->sp);
+    printf("\nnStack Frame %u:\n", vm->sp);
     for (uint32_t i = 0; i < STACK_VAR_COUNT; i++) {
         var_value_t* v = (var_value_t*)&vm->stack_frames[vm->sp].stack_vars[i];
         if (v->type != V_VOID) {
@@ -367,7 +709,7 @@ void vm_dump_state(const vm_state_t* vm) {
             if (v->type == V_I32) printf("%d", v->val.i32);
             else if (v->type == V_U32) printf("%u", v->val.u32);
             else if (v->type == V_FLOAT) printf("%f", v->val.f32);
-            printf("\n");
+            printf("\nn");
         }
     }
 }
