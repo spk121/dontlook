@@ -68,13 +68,13 @@ static uint8_t* load_file(const char* filename, uint32_t* size) {
                 return NULL;
             }
         }
-        total_read += n;
-        if (total_read > PROGRAM_MAX_SIZE) {
+        if (total_read + n > PROGRAM_MAX_SIZE) {
             fprintf(stderr, "Error: File too large\n");
             free(buffer);
             fclose(f);
             return NULL;
         }
+        total_read += n;
     }
     fclose(f);
 

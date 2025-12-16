@@ -575,6 +575,9 @@ vm_status_t vm_step(vm_state_t* vm) {
             if (!src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
             if (src1->type != V_FLOAT || src2->type != V_FLOAT) { status = VM_ERR_TYPE_MISMATCH; break; }
             vm->flags = 0;
+            /* Use epsilon comparison for float equality to handle precision issues.
+             * Tolerance of 1e-6f provides reasonable precision for 32-bit floats
+             * while avoiding false inequalities from rounding errors. */
             if (fabsf(src1->val.f32 - src2->val.f32) < 1e-6f) vm->flags |= FLAG_ZERO;
             if (src1->val.f32 < src2->val.f32) vm->flags |= FLAG_LESS;
             if (src1->val.f32 > src2->val.f32) vm->flags |= FLAG_GREATER;
