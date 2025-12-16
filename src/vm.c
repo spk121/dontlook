@@ -658,7 +658,7 @@ vm_status_t vm_step(vm_state_t* vm) {
             break;
         }
         case OP_PRINTLN:
-            printf("\\n");
+            printf("\n");
             break;
             
         /* Note: Buffer and String operations are complex and would require
@@ -701,7 +701,7 @@ void vm_dump_state(const vm_state_t* vm) {
     printf("PC: 0x%04X  SP: %u  Flags: 0x%02X\n", vm->pc, vm->sp, vm->flags);
     printf("Last Error: %s\n", vm_get_error_string(vm->last_error));
     
-    printf("\nnStack Frame %u:\n", vm->sp);
+    printf("\nStack Frame %u:\n", vm->sp);
     for (uint32_t i = 0; i < STACK_VAR_COUNT; i++) {
         var_value_t* v = (var_value_t*)&vm->stack_frames[vm->sp].stack_vars[i];
         if (v->type != V_VOID) {
@@ -709,7 +709,7 @@ void vm_dump_state(const vm_state_t* vm) {
             if (v->type == V_I32) printf("%d", v->val.i32);
             else if (v->type == V_U32) printf("%u", v->val.u32);
             else if (v->type == V_FLOAT) printf("%f", v->val.f32);
-            printf("\nn");
+            printf("\n");
         }
     }
 }
