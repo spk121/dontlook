@@ -837,11 +837,19 @@ vm_status_t vm_step(vm_state_t* vm) {
             switch (buf->type) {
                 case MB_U8:
                     if (src->type != V_U32 && src->type != V_I32) { status = VM_ERR_TYPE_MISMATCH; break; }
-                    buf->buf.u8x256[pos] = (uint8_t)(src->type == V_U32 ? src->val.u32 : (uint32_t)src->val.i32);
+                    if (src->type == V_U32) {
+                        buf->buf.u8x256[pos] = (uint8_t)src->val.u32;
+                    } else {
+                        buf->buf.u8x256[pos] = (uint8_t)src->val.i32;
+                    }
                     break;
                 case MB_U16:
                     if (src->type != V_U32 && src->type != V_I32) { status = VM_ERR_TYPE_MISMATCH; break; }
-                    buf->buf.u16x128[pos] = (uint16_t)(src->type == V_U32 ? src->val.u32 : (uint32_t)src->val.i32);
+                    if (src->type == V_U32) {
+                        buf->buf.u16x128[pos] = (uint16_t)src->val.u32;
+                    } else {
+                        buf->buf.u16x128[pos] = (uint16_t)src->val.i32;
+                    }
                     break;
                 case MB_I32:
                     if (src->type != V_I32) { status = VM_ERR_TYPE_MISMATCH; break; }
@@ -1081,6 +1089,7 @@ vm_status_t vm_step(vm_state_t* vm) {
             var_value_t* dest = get_stack_var(vm, hdr.operand);
             if (!dest) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
             
+            /* Safe: scanf with %d reads into fixed-size int32_t variable, no buffer overflow risk */
             int32_t value;
             if (scanf("%d", &value) == 1) {
                 dest->type = V_I32;
@@ -1100,6 +1109,7 @@ vm_status_t vm_step(vm_state_t* vm) {
             var_value_t* dest = get_stack_var(vm, hdr.operand);
             if (!dest) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
             
+            /* Safe: scanf with %u reads into fixed-size uint32_t variable, no buffer overflow risk */
             uint32_t value;
             if (scanf("%u", &value) == 1) {
                 dest->type = V_U32;
@@ -1119,6 +1129,7 @@ vm_status_t vm_step(vm_state_t* vm) {
             var_value_t* dest = get_stack_var(vm, hdr.operand);
             if (!dest) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
             
+            /* Safe: scanf with %f reads into fixed-size float variable, no buffer overflow risk */
             float value;
             if (scanf("%f", &value) == 1) {
                 dest->type = V_FLOAT;
