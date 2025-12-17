@@ -479,6 +479,11 @@ vm_status_t vm_step(vm_state_t* vm) {
             if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
             if (src1->type != V_I32 || src2->type != V_I32) { status = VM_ERR_TYPE_MISMATCH; break; }
             if (src2->val.i32 == 0) { status = VM_ERR_DIV_BY_ZERO; break; }
+            /* Check for overflow: INT32_MIN / -1 overflows */
+            if (src1->val.i32 == INT32_MIN && src2->val.i32 == -1) {
+                status = VM_ERR_OVERFLOW;
+                break;
+            }
             dest->type = V_I32;
             dest->val.i32 = src1->val.i32 / src2->val.i32;
             break;
@@ -490,6 +495,11 @@ vm_status_t vm_step(vm_state_t* vm) {
             if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
             if (src1->type != V_I32 || src2->type != V_I32) { status = VM_ERR_TYPE_MISMATCH; break; }
             if (src2->val.i32 == 0) { status = VM_ERR_DIV_BY_ZERO; break; }
+            /* Check for overflow: INT32_MIN % -1 overflows */
+            if (src1->val.i32 == INT32_MIN && src2->val.i32 == -1) {
+                status = VM_ERR_OVERFLOW;
+                break;
+            }
             dest->type = V_I32;
             dest->val.i32 = src1->val.i32 % src2->val.i32;
             break;
