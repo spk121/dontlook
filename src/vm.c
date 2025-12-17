@@ -10,6 +10,9 @@
 #include <stdint.h>  /* For INT32_MIN */
 #include <inttypes.h>  /* For SCNd32, SCNu32 format specifiers */
 
+/* GCC provides overflow checking built-ins that work like C23 stdckdint.h */
+/* These are available in GCC 5+ and work identically to C23 ckd_* functions */
+
 /* ============================================================================
  * Helper Functions - MISRA-C Compliant I/O (no printf/fprintf)
  * ============================================================================ */
@@ -182,7 +185,8 @@ const char* vm_get_error_string(vm_status_t status) {
         [VM_ERR_INVALID_LOCAL_IDX] = "Invalid local index", [VM_ERR_INVALID_STACK_VAR_IDX] = "Invalid stack var index",
         [VM_ERR_INVALID_BUFFER_IDX] = "Invalid buffer index", [VM_ERR_INVALID_BUFFER_POS] = "Invalid buffer position",
         [VM_ERR_INVALID_PC] = "Invalid program counter", [VM_ERR_INVALID_INSTRUCTION] = "Invalid instruction",
-        [VM_ERR_PROGRAM_TOO_LARGE] = "Program too large", [VM_ERR_HALT] = "Program halted"
+        [VM_ERR_PROGRAM_TOO_LARGE] = "Program too large", [VM_ERR_OVERFLOW] = "Arithmetic overflow",
+        [VM_ERR_HALT] = "Program halted"
     };
     return (status <= VM_ERR_HALT) ? errors[status] : "Unknown error";
 }
@@ -193,6 +197,13 @@ bool validate_stack_var_idx(index_t idx) { return idx < STACK_VAR_COUNT; }
 bool validate_buffer_idx(index_t idx) { return idx < G_MEMBUF_COUNT; }
 bool validate_buffer_pos(membuf_type_t type, pos_t pos) {
     return pos < get_buffer_capacity(type);
+}
+
+/* Helper function to validate float results */
+static inline bool is_valid_float(float value) {
+    /* Accept normal numbers, zero, and negative zero */
+    /* Reject: infinity, NaN, subnormal numbers */
+    return (fpclassify(value) == FP_NORMAL) || (fpclassify(value) == FP_ZERO);
 }
 
 void vm_init(vm_state_t* vm) {
@@ -418,7 +429,10 @@ vm_status_t vm_step(vm_state_t* vm) {
             if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
             if (src1->type != V_I32 || src2->type != V_I32) { status = VM_ERR_TYPE_MISMATCH; break; }
             dest->type = V_I32;
-            dest->val.i32 = src1->val.i32 + src2->val.i32;
+            if (__builtin_add_overflow(src1->val.i32, src2->val.i32, &dest->val.i32)) {
+                status = VM_ERR_OVERFLOW;
+                break;
+            }
             break;
         }
         case OP_SUB_I32: {
@@ -428,7 +442,10 @@ vm_status_t vm_step(vm_state_t* vm) {
             if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
             if (src1->type != V_I32 || src2->type != V_I32) { status = VM_ERR_TYPE_MISMATCH; break; }
             dest->type = V_I32;
-            dest->val.i32 = src1->val.i32 - src2->val.i32;
+            if (__builtin_sub_overflow(src1->val.i32, src2->val.i32, &dest->val.i32)) {
+                status = VM_ERR_OVERFLOW;
+                break;
+            }
             break;
         }
         case OP_MUL_I32: {
@@ -438,7 +455,10 @@ vm_status_t vm_step(vm_state_t* vm) {
             if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
             if (src1->type != V_I32 || src2->type != V_I32) { status = VM_ERR_TYPE_MISMATCH; break; }
             dest->type = V_I32;
-            dest->val.i32 = src1->val.i32 * src2->val.i32;
+            if (__builtin_mul_overflow(src1->val.i32, src2->val.i32, &dest->val.i32)) {
+                status = VM_ERR_OVERFLOW;
+                break;
+            }
             break;
         }
         case OP_DIV_I32: {
@@ -469,6 +489,11 @@ vm_status_t vm_step(vm_state_t* vm) {
             if (!dest || !src) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
             if (src->type != V_I32) { status = VM_ERR_TYPE_MISMATCH; break; }
             dest->type = V_I32;
+            /* Check for overflow: negating INT32_MIN overflows */
+            if (src->val.i32 == INT32_MIN) {
+                status = VM_ERR_OVERFLOW;
+                break;
+            }
             dest->val.i32 = -src->val.i32;
             break;
         }
@@ -481,7 +506,10 @@ vm_status_t vm_step(vm_state_t* vm) {
             if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
             if (src1->type != V_U32 || src2->type != V_U32) { status = VM_ERR_TYPE_MISMATCH; break; }
             dest->type = V_U32;
-            dest->val.u32 = src1->val.u32 + src2->val.u32;
+            if (__builtin_add_overflow(src1->val.u32, src2->val.u32, &dest->val.u32)) {
+                status = VM_ERR_OVERFLOW;
+                break;
+            }
             break;
         }
         case OP_SUB_U32: {
@@ -491,7 +519,10 @@ vm_status_t vm_step(vm_state_t* vm) {
             if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
             if (src1->type != V_U32 || src2->type != V_U32) { status = VM_ERR_TYPE_MISMATCH; break; }
             dest->type = V_U32;
-            dest->val.u32 = src1->val.u32 - src2->val.u32;
+            if (__builtin_sub_overflow(src1->val.u32, src2->val.u32, &dest->val.u32)) {
+                status = VM_ERR_OVERFLOW;
+                break;
+            }
             break;
         }
         case OP_MUL_U32: {
@@ -501,7 +532,10 @@ vm_status_t vm_step(vm_state_t* vm) {
             if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
             if (src1->type != V_U32 || src2->type != V_U32) { status = VM_ERR_TYPE_MISMATCH; break; }
             dest->type = V_U32;
-            dest->val.u32 = src1->val.u32 * src2->val.u32;
+            if (__builtin_mul_overflow(src1->val.u32, src2->val.u32, &dest->val.u32)) {
+                status = VM_ERR_OVERFLOW;
+                break;
+            }
             break;
         }
         case OP_DIV_U32: {
@@ -536,6 +570,10 @@ vm_status_t vm_step(vm_state_t* vm) {
             if (src1->type != V_FLOAT || src2->type != V_FLOAT) { status = VM_ERR_TYPE_MISMATCH; break; }
             dest->type = V_FLOAT;
             dest->val.f32 = src1->val.f32 + src2->val.f32;
+            if (!is_valid_float(dest->val.f32)) {
+                status = VM_ERR_OVERFLOW;
+                break;
+            }
             break;
         }
         case OP_SUB_F32: {
@@ -546,6 +584,10 @@ vm_status_t vm_step(vm_state_t* vm) {
             if (src1->type != V_FLOAT || src2->type != V_FLOAT) { status = VM_ERR_TYPE_MISMATCH; break; }
             dest->type = V_FLOAT;
             dest->val.f32 = src1->val.f32 - src2->val.f32;
+            if (!is_valid_float(dest->val.f32)) {
+                status = VM_ERR_OVERFLOW;
+                break;
+            }
             break;
         }
         case OP_MUL_F32: {
@@ -556,6 +598,10 @@ vm_status_t vm_step(vm_state_t* vm) {
             if (src1->type != V_FLOAT || src2->type != V_FLOAT) { status = VM_ERR_TYPE_MISMATCH; break; }
             dest->type = V_FLOAT;
             dest->val.f32 = src1->val.f32 * src2->val.f32;
+            if (!is_valid_float(dest->val.f32)) {
+                status = VM_ERR_OVERFLOW;
+                break;
+            }
             break;
         }
         case OP_DIV_F32: {
@@ -567,6 +613,10 @@ vm_status_t vm_step(vm_state_t* vm) {
             if (src2->val.f32 == 0.0f) { status = VM_ERR_DIV_BY_ZERO; break; }
             dest->type = V_FLOAT;
             dest->val.f32 = src1->val.f32 / src2->val.f32;
+            if (!is_valid_float(dest->val.f32)) {
+                status = VM_ERR_OVERFLOW;
+                break;
+            }
             break;
         }
         case OP_NEG_F32: {
@@ -576,6 +626,10 @@ vm_status_t vm_step(vm_state_t* vm) {
             if (src->type != V_FLOAT) { status = VM_ERR_TYPE_MISMATCH; break; }
             dest->type = V_FLOAT;
             dest->val.f32 = -src->val.f32;
+            if (!is_valid_float(dest->val.f32)) {
+                status = VM_ERR_OVERFLOW;
+                break;
+            }
             break;
         }
         case OP_ABS_F32: {
@@ -585,6 +639,10 @@ vm_status_t vm_step(vm_state_t* vm) {
             if (src->type != V_FLOAT) { status = VM_ERR_TYPE_MISMATCH; break; }
             dest->type = V_FLOAT;
             dest->val.f32 = fabsf(src->val.f32);
+            if (!is_valid_float(dest->val.f32)) {
+                status = VM_ERR_OVERFLOW;
+                break;
+            }
             break;
         }
         case OP_SQRT_F32: {
@@ -594,6 +652,10 @@ vm_status_t vm_step(vm_state_t* vm) {
             if (src->type != V_FLOAT) { status = VM_ERR_TYPE_MISMATCH; break; }
             dest->type = V_FLOAT;
             dest->val.f32 = sqrtf(src->val.f32);
+            if (!is_valid_float(dest->val.f32)) {
+                status = VM_ERR_OVERFLOW;
+                break;
+            }
             break;
         }
         
