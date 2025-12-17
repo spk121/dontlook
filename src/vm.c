@@ -15,9 +15,14 @@
 #include <stdckdint.h>
 #else
 /* GCC builtins provide equivalent functionality to C23 ckd_* functions */
+/* Requires GCC 5+ or Clang 3.8+ */
+#if defined(__GNUC__) || defined(__clang__)
 #define ckd_add(r, a, b) __builtin_add_overflow((a), (b), (r))
 #define ckd_sub(r, a, b) __builtin_sub_overflow((a), (b), (r))
 #define ckd_mul(r, a, b) __builtin_mul_overflow((a), (b), (r))
+#else
+#error "Checked arithmetic requires C23, GCC 5+, or Clang 3.8+"
+#endif
 #endif
 
 /* ============================================================================
@@ -502,7 +507,7 @@ vm_status_t vm_step(vm_state_t* vm) {
             if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
             if (src1->type != V_I32 || src2->type != V_I32) { status = VM_ERR_TYPE_MISMATCH; break; }
             if (src2->val.i32 == 0) { status = VM_ERR_DIV_BY_ZERO; break; }
-            /* Check for overflow: INT32_MIN % -1 overflows */
+            /* Check for overflow: INT32_MIN % -1 causes hardware exception on many platforms */
             if (src1->val.i32 == INT32_MIN && src2->val.i32 == -1) {
                 status = VM_ERR_OVERFLOW;
                 break;
@@ -637,7 +642,7 @@ vm_status_t vm_step(vm_state_t* vm) {
             if (!dest || !src) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
             if (src->type != V_FLOAT) { status = VM_ERR_TYPE_MISMATCH; break; }
             dest->type = V_FLOAT;
-            SET_FLOAT_RESULT(dest, -src->val.f32);
+            dest->val.f32 = -src->val.f32;
             break;
         }
         case OP_ABS_F32: {
@@ -646,7 +651,7 @@ vm_status_t vm_step(vm_state_t* vm) {
             if (!dest || !src) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
             if (src->type != V_FLOAT) { status = VM_ERR_TYPE_MISMATCH; break; }
             dest->type = V_FLOAT;
-            SET_FLOAT_RESULT(dest, fabsf(src->val.f32));
+            dest->val.f32 = fabsf(src->val.f32);
             break;
         }
         case OP_SQRT_F32: {
@@ -654,6 +659,11 @@ vm_status_t vm_step(vm_state_t* vm) {
             var_value_t* src = get_stack_var(vm, imm1.u32 & 0xFF);
             if (!dest || !src) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
             if (src->type != V_FLOAT) { status = VM_ERR_TYPE_MISMATCH; break; }
+            /* Check for negative input before sqrt */
+            if (src->val.f32 < 0.0f) {
+                status = VM_ERR_OVERFLOW;
+                break;
+            }
             dest->type = V_FLOAT;
             SET_FLOAT_RESULT(dest, sqrtf(src->val.f32));
             break;
