@@ -10,7 +10,7 @@
 #include <stdint.h>  /* For INT32_MIN */
 #include <inttypes.h>  /* For SCNd32, SCNu32 format specifiers */
 
-/* GCC provides overflow checking built-ins that work like C23 stdckdint.h */
+/* GCC provides overflow checking builtins that work like C23 stdckdint.h */
 /* These are available in GCC 5+ and work identically to C23 ckd_* functions */
 
 /* ============================================================================
