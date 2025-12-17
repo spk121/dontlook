@@ -1,6 +1,6 @@
 # Stipple VM Makefile
 CC = gcc
-CFLAGS = -Wall -Wextra -std=c11 -O2 -Isrc
+CFLAGS = -Wall -Wextra -std=c2x -O2 -Isrc
 LDFLAGS = -lm
 BUILD_DIR = build
 VM_EXE = $(BUILD_DIR)/stipple-vm

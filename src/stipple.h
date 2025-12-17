@@ -61,6 +61,7 @@ typedef enum {
 	VM_ERR_INVALID_PC,            /* Program counter out of bounds */
 	VM_ERR_INVALID_INSTRUCTION,   /* Malformed instruction */
 	VM_ERR_PROGRAM_TOO_LARGE,     /* Program exceeds maximum size */
+	VM_ERR_OVERFLOW,              /* Arithmetic overflow or invalid float result */
 	VM_ERR_HALT                   /* HALT instruction executed (not an error) */
 } vm_status_t;
 
