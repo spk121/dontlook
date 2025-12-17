@@ -10,8 +10,15 @@
 #include <stdint.h>  /* For INT32_MIN */
 #include <inttypes.h>  /* For SCNd32, SCNu32 format specifiers */
 
-/* GCC provides overflow checking builtins that work like C23 stdckdint.h */
-/* These are available in GCC 5+ and work identically to C23 ckd_* functions */
+/* Use C23 checked arithmetic functions if available, otherwise use GCC builtins */
+#if __STDC_VERSION__ >= 202311L
+#include <stdckdint.h>
+#else
+/* GCC builtins provide equivalent functionality to C23 ckd_* functions */
+#define ckd_add(r, a, b) __builtin_add_overflow((a), (b), (r))
+#define ckd_sub(r, a, b) __builtin_sub_overflow((a), (b), (r))
+#define ckd_mul(r, a, b) __builtin_mul_overflow((a), (b), (r))
+#endif
 
 /* ============================================================================
  * Helper Functions - MISRA-C Compliant I/O (no printf/fprintf)
@@ -440,7 +447,7 @@ vm_status_t vm_step(vm_state_t* vm) {
             if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
             if (src1->type != V_I32 || src2->type != V_I32) { status = VM_ERR_TYPE_MISMATCH; break; }
             dest->type = V_I32;
-            if (__builtin_add_overflow(src1->val.i32, src2->val.i32, &dest->val.i32)) {
+            if (ckd_add(&dest->val.i32, src1->val.i32, src2->val.i32)) {
                 status = VM_ERR_OVERFLOW;
                 break;
             }
@@ -453,7 +460,7 @@ vm_status_t vm_step(vm_state_t* vm) {
             if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
             if (src1->type != V_I32 || src2->type != V_I32) { status = VM_ERR_TYPE_MISMATCH; break; }
             dest->type = V_I32;
-            if (__builtin_sub_overflow(src1->val.i32, src2->val.i32, &dest->val.i32)) {
+            if (ckd_sub(&dest->val.i32, src1->val.i32, src2->val.i32)) {
                 status = VM_ERR_OVERFLOW;
                 break;
             }
@@ -466,7 +473,7 @@ vm_status_t vm_step(vm_state_t* vm) {
             if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
             if (src1->type != V_I32 || src2->type != V_I32) { status = VM_ERR_TYPE_MISMATCH; break; }
             dest->type = V_I32;
-            if (__builtin_mul_overflow(src1->val.i32, src2->val.i32, &dest->val.i32)) {
+            if (ckd_mul(&dest->val.i32, src1->val.i32, src2->val.i32)) {
                 status = VM_ERR_OVERFLOW;
                 break;
             }
@@ -527,7 +534,7 @@ vm_status_t vm_step(vm_state_t* vm) {
             if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
             if (src1->type != V_U32 || src2->type != V_U32) { status = VM_ERR_TYPE_MISMATCH; break; }
             dest->type = V_U32;
-            if (__builtin_add_overflow(src1->val.u32, src2->val.u32, &dest->val.u32)) {
+            if (ckd_add(&dest->val.u32, src1->val.u32, src2->val.u32)) {
                 status = VM_ERR_OVERFLOW;
                 break;
             }
@@ -540,7 +547,7 @@ vm_status_t vm_step(vm_state_t* vm) {
             if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
             if (src1->type != V_U32 || src2->type != V_U32) { status = VM_ERR_TYPE_MISMATCH; break; }
             dest->type = V_U32;
-            if (__builtin_sub_overflow(src1->val.u32, src2->val.u32, &dest->val.u32)) {
+            if (ckd_sub(&dest->val.u32, src1->val.u32, src2->val.u32)) {
                 status = VM_ERR_OVERFLOW;
                 break;
             }
@@ -553,7 +560,7 @@ vm_status_t vm_step(vm_state_t* vm) {
             if (!dest || !src1 || !src2) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
             if (src1->type != V_U32 || src2->type != V_U32) { status = VM_ERR_TYPE_MISMATCH; break; }
             dest->type = V_U32;
-            if (__builtin_mul_overflow(src1->val.u32, src2->val.u32, &dest->val.u32)) {
+            if (ckd_mul(&dest->val.u32, src1->val.u32, src2->val.u32)) {
                 status = VM_ERR_OVERFLOW;
                 break;
             }
