@@ -8,6 +8,7 @@
 #include <string.h>
 #include <math.h>
 #include <stdint.h>  /* For INT32_MIN */
+#include <inttypes.h>  /* For SCNd32, SCNu32 format specifiers */
 
 /* ============================================================================
  * Helper Functions - MISRA-C Compliant I/O (no printf/fprintf)
@@ -778,14 +779,439 @@ vm_status_t vm_step(vm_state_t* vm) {
         case OP_PRINTLN:
             (void)fputc('\n', stdout);
             break;
+        
+        /* Buffer Operations */
+        case OP_BUF_READ: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            if (!dest) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
             
-        /* Buffer and String operations are not implemented in this version.
-         * Implementing these would require significant additional code (~500+ lines)
-         * due to their complexity. For the current milestone, omitting these operations
-         * is an intentional trade-off to focus on core VM functionality and achieve 83% coverage.
-         * These features are planned for a future milestone and are not required for current use cases.
-         * Contributors or users needing buffer/string support should refer to the project roadmap or open an issue.
-         */
+            uint32_t buf_idx = imm1.u32;
+            uint32_t pos = imm2.u32;
+            
+            if (!validate_buffer_idx(buf_idx)) { status = VM_ERR_INVALID_BUFFER_IDX; break; }
+            
+            membuf_t* buf = &vm->g_membuf[buf_idx];
+            if (buf->type == MB_VOID) { status = VM_ERR_TYPE_MISMATCH; break; }
+            if (!validate_buffer_pos(buf->type, pos)) { status = VM_ERR_INVALID_BUFFER_POS; break; }
+            
+            switch (buf->type) {
+                case MB_U8:
+                    dest->type = V_U32;
+                    dest->val.u32 = (uint32_t)buf->buf.u8x256[pos];
+                    break;
+                case MB_U16:
+                    dest->type = V_U32;
+                    dest->val.u32 = (uint32_t)buf->buf.u16x128[pos];
+                    break;
+                case MB_I32:
+                    dest->type = V_I32;
+                    dest->val.i32 = buf->buf.i32x64[pos];
+                    break;
+                case MB_U32:
+                    dest->type = V_U32;
+                    dest->val.u32 = buf->buf.u32x64[pos];
+                    break;
+                case MB_FLOAT:
+                    dest->type = V_FLOAT;
+                    dest->val.f32 = buf->buf.f32x64[pos];
+                    break;
+                default:
+                    status = VM_ERR_TYPE_MISMATCH;
+                    break;
+            }
+            break;
+        }
+        
+        case OP_BUF_WRITE: {
+            var_value_t* src = get_stack_var(vm, hdr.operand);
+            if (!src) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            
+            uint32_t buf_idx = imm1.u32;
+            uint32_t pos = imm2.u32;
+            
+            if (!validate_buffer_idx(buf_idx)) { status = VM_ERR_INVALID_BUFFER_IDX; break; }
+            
+            membuf_t* buf = &vm->g_membuf[buf_idx];
+            if (buf->type == MB_VOID) { status = VM_ERR_TYPE_MISMATCH; break; }
+            if (!validate_buffer_pos(buf->type, pos)) { status = VM_ERR_INVALID_BUFFER_POS; break; }
+            
+            switch (buf->type) {
+                case MB_U8:
+                    if (src->type != V_U32 && src->type != V_I32) { status = VM_ERR_TYPE_MISMATCH; break; }
+                    if (src->type == V_U32) {
+                        buf->buf.u8x256[pos] = (uint8_t)src->val.u32;
+                    } else {
+                        buf->buf.u8x256[pos] = (uint8_t)src->val.i32;
+                    }
+                    break;
+                case MB_U16:
+                    if (src->type != V_U32 && src->type != V_I32) { status = VM_ERR_TYPE_MISMATCH; break; }
+                    if (src->type == V_U32) {
+                        buf->buf.u16x128[pos] = (uint16_t)src->val.u32;
+                    } else {
+                        buf->buf.u16x128[pos] = (uint16_t)src->val.i32;
+                    }
+                    break;
+                case MB_I32:
+                    if (src->type != V_I32) { status = VM_ERR_TYPE_MISMATCH; break; }
+                    buf->buf.i32x64[pos] = src->val.i32;
+                    break;
+                case MB_U32:
+                    if (src->type != V_U32) { status = VM_ERR_TYPE_MISMATCH; break; }
+                    buf->buf.u32x64[pos] = src->val.u32;
+                    break;
+                case MB_FLOAT:
+                    if (src->type != V_FLOAT) { status = VM_ERR_TYPE_MISMATCH; break; }
+                    buf->buf.f32x64[pos] = src->val.f32;
+                    break;
+                default:
+                    status = VM_ERR_TYPE_MISMATCH;
+                    break;
+            }
+            break;
+        }
+        
+        case OP_BUF_LEN: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            if (!dest) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            
+            uint32_t buf_idx = imm1.u32;
+            if (!validate_buffer_idx(buf_idx)) { status = VM_ERR_INVALID_BUFFER_IDX; break; }
+            
+            membuf_t* buf = &vm->g_membuf[buf_idx];
+            dest->type = V_U32;
+            dest->val.u32 = get_buffer_capacity(buf->type);
+            break;
+        }
+        
+        case OP_BUF_CLEAR: {
+            uint32_t buf_idx = imm1.u32;
+            if (!validate_buffer_idx(buf_idx)) { status = VM_ERR_INVALID_BUFFER_IDX; break; }
+            
+            membuf_t* buf = &vm->g_membuf[buf_idx];
+            memset(&buf->buf, 0, sizeof(buf->buf));
+            break;
+        }
+        
+        /* String Operations */
+        case OP_STR_CAT: {
+            uint32_t dest_idx = hdr.operand;
+            uint32_t src1_idx = imm1.u32;
+            uint32_t src2_idx = imm2.u32;
+            
+            if (!validate_buffer_idx(dest_idx) || !validate_buffer_idx(src1_idx) || !validate_buffer_idx(src2_idx)) {
+                status = VM_ERR_INVALID_BUFFER_IDX; break;
+            }
+            
+            membuf_t* dest_buf = &vm->g_membuf[dest_idx];
+            membuf_t* src1_buf = &vm->g_membuf[src1_idx];
+            membuf_t* src2_buf = &vm->g_membuf[src2_idx];
+            
+            if (src1_buf->type != MB_U8 || src2_buf->type != MB_U8) {
+                status = VM_ERR_TYPE_MISMATCH; break;
+            }
+            
+            dest_buf->type = MB_U8;
+            
+            /* Find lengths of source strings */
+            uint32_t len1 = 0;
+            while (len1 < MEMBUF_U8_COUNT && src1_buf->buf.u8x256[len1] != 0) {
+                len1++;
+            }
+            
+            uint32_t len2 = 0;
+            while (len2 < MEMBUF_U8_COUNT && src2_buf->buf.u8x256[len2] != 0) {
+                len2++;
+            }
+            
+            /* Handle buffer aliasing: if dest overlaps with src1 or src2, use a temp buffer */
+            uint8_t tmp[MEMBUF_U8_COUNT];
+            uint8_t* out_buf;
+            if (dest_idx == src1_idx || dest_idx == src2_idx) {
+                out_buf = tmp;
+            } else {
+                out_buf = dest_buf->buf.u8x256;
+            }
+            
+            /* Copy first string */
+            uint32_t i;
+            uint32_t j;
+            for (i = 0; i < len1 && i < MEMBUF_U8_COUNT - 1; i++) {
+                out_buf[i] = src1_buf->buf.u8x256[i];
+            }
+            
+            /* Append second string */
+            for (j = 0; j < len2 && i < MEMBUF_U8_COUNT - 1; j++, i++) {
+                out_buf[i] = src2_buf->buf.u8x256[j];
+            }
+            
+            /* Null terminate */
+            out_buf[i] = 0;
+            
+            /* If we used a temp buffer, copy result to dest */
+            if (out_buf == tmp) {
+                /* Copy up to and including null terminator, with bounds check */
+                uint32_t copy_len = (i < MEMBUF_U8_COUNT - 1) ? i + 1 : MEMBUF_U8_COUNT;
+                for (uint32_t k = 0; k < copy_len; k++) {
+                    dest_buf->buf.u8x256[k] = tmp[k];
+                }
+                /* Ensure null termination */
+                dest_buf->buf.u8x256[MEMBUF_U8_COUNT - 1] = 0;
+            }
+            break;
+        }
+        
+        case OP_STR_COPY: {
+            uint32_t dest_idx = hdr.operand;
+            uint32_t src_idx = imm1.u32;
+            
+            if (!validate_buffer_idx(dest_idx) || !validate_buffer_idx(src_idx)) {
+                status = VM_ERR_INVALID_BUFFER_IDX; break;
+            }
+            
+            /* Optimize: if copying to same buffer, it's a no-op */
+            if (dest_idx == src_idx) {
+                break;
+            }
+            
+            membuf_t* dest_buf = &vm->g_membuf[dest_idx];
+            membuf_t* src_buf = &vm->g_membuf[src_idx];
+            
+            if (src_buf->type != MB_U8) {
+                status = VM_ERR_TYPE_MISMATCH; break;
+            }
+            
+            dest_buf->type = MB_U8;
+            
+            /* Copy string with null terminator */
+            uint32_t i;
+            for (i = 0; i < MEMBUF_U8_COUNT; i++) {
+                dest_buf->buf.u8x256[i] = src_buf->buf.u8x256[i];
+                if (src_buf->buf.u8x256[i] == 0) {
+                    break;
+                }
+            }
+            
+            /* Ensure null termination */
+            if (i == MEMBUF_U8_COUNT) {
+                dest_buf->buf.u8x256[MEMBUF_U8_COUNT - 1] = 0;
+            }
+            break;
+        }
+        
+        case OP_STR_LEN: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            if (!dest) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            
+            uint32_t buf_idx = imm1.u32;
+            if (!validate_buffer_idx(buf_idx)) { status = VM_ERR_INVALID_BUFFER_IDX; break; }
+            
+            membuf_t* buf = &vm->g_membuf[buf_idx];
+            if (buf->type != MB_U8) { status = VM_ERR_TYPE_MISMATCH; break; }
+            
+            /* Find string length */
+            uint32_t len = 0;
+            while (len < MEMBUF_U8_COUNT && buf->buf.u8x256[len] != 0) {
+                len++;
+            }
+            
+            dest->type = V_U32;
+            dest->val.u32 = len;
+            break;
+        }
+        
+        case OP_STR_CMP: {
+            uint32_t buf1_idx = imm1.u32;
+            uint32_t buf2_idx = imm2.u32;
+            
+            if (!validate_buffer_idx(buf1_idx) || !validate_buffer_idx(buf2_idx)) {
+                status = VM_ERR_INVALID_BUFFER_IDX; break;
+            }
+            
+            membuf_t* buf1 = &vm->g_membuf[buf1_idx];
+            membuf_t* buf2 = &vm->g_membuf[buf2_idx];
+            
+            if (buf1->type != MB_U8 || buf2->type != MB_U8) {
+                status = VM_ERR_TYPE_MISMATCH; break;
+            }
+            
+            /* Compare strings byte by byte */
+            vm->flags = 0;
+            int32_t cmp_result = 0;
+            
+            for (uint32_t i = 0; i < MEMBUF_U8_COUNT; i++) {
+                uint8_t c1 = buf1->buf.u8x256[i];
+                uint8_t c2 = buf2->buf.u8x256[i];
+                
+                if (c1 < c2) {
+                    cmp_result = -1;
+                    break;
+                } else if (c1 > c2) {
+                    cmp_result = 1;
+                    break;
+                } else if (c1 == 0) {
+                    /* Both strings ended at same position */
+                    break;
+                }
+            }
+            
+            if (cmp_result == 0) vm->flags |= FLAG_ZERO;
+            if (cmp_result < 0) vm->flags |= FLAG_LESS;
+            if (cmp_result > 0) vm->flags |= FLAG_GREATER;
+            break;
+        }
+        
+        case OP_STR_CHR: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            if (!dest) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            
+            uint32_t buf_idx = imm1.u32;
+            uint32_t pos = imm2.u32;
+            
+            if (!validate_buffer_idx(buf_idx)) { status = VM_ERR_INVALID_BUFFER_IDX; break; }
+            
+            membuf_t* buf = &vm->g_membuf[buf_idx];
+            if (buf->type != MB_U8) { status = VM_ERR_TYPE_MISMATCH; break; }
+            if (pos >= MEMBUF_U8_COUNT) { status = VM_ERR_INVALID_BUFFER_POS; break; }
+            
+            dest->type = V_U32;
+            dest->val.u32 = (uint32_t)buf->buf.u8x256[pos];
+            break;
+        }
+        
+        case OP_STR_SET_CHR: {
+            uint32_t buf_idx = imm1.u32;
+            uint32_t pos = imm2.u32;
+            uint32_t chr_val = imm3.u32;
+            
+            if (!validate_buffer_idx(buf_idx)) { status = VM_ERR_INVALID_BUFFER_IDX; break; }
+            
+            membuf_t* buf = &vm->g_membuf[buf_idx];
+            if (buf->type != MB_U8) { status = VM_ERR_TYPE_MISMATCH; break; }
+            if (pos >= MEMBUF_U8_COUNT) { status = VM_ERR_INVALID_BUFFER_POS; break; }
+            
+            buf->buf.u8x256[pos] = (uint8_t)(chr_val & 0xFFu);
+            break;
+        }
+        
+        /* I/O Operations */
+        case OP_PRINT_STR: {
+            uint32_t buf_idx = imm1.u32;
+            if (!validate_buffer_idx(buf_idx)) { status = VM_ERR_INVALID_BUFFER_IDX; break; }
+            
+            membuf_t* buf = &vm->g_membuf[buf_idx];
+            if (buf->type != MB_U8) { status = VM_ERR_TYPE_MISMATCH; break; }
+            
+            /* Print string up to null terminator */
+            for (uint32_t i = 0; i < MEMBUF_U8_COUNT; i++) {
+                if (buf->buf.u8x256[i] == 0) {
+                    break;
+                }
+                (void)fputc((char)buf->buf.u8x256[i], stdout);
+            }
+            break;
+        }
+        
+        case OP_READ_I32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            if (!dest) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            
+            /* Use SCNd32 for portable scanf with int32_t */
+            int32_t value;
+            if (scanf("%" SCNd32, &value) == 1) {
+                dest->type = V_I32;
+                dest->val.i32 = value;
+            } else {
+                /* On read failure, set to 0 */
+                dest->type = V_I32;
+                dest->val.i32 = 0;
+                /* Clear input buffer with limit to prevent indefinite blocking */
+                int c;
+                uint32_t clear_count = 0;
+                const uint32_t MAX_CLEAR = 1024;
+                while (clear_count < MAX_CLEAR && (c = getchar()) != '\n' && c != EOF) {
+                    clear_count++;
+                }
+            }
+            break;
+        }
+        
+        case OP_READ_U32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            if (!dest) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            
+            /* Use SCNu32 for portable scanf with uint32_t */
+            uint32_t value;
+            if (scanf("%" SCNu32, &value) == 1) {
+                dest->type = V_U32;
+                dest->val.u32 = value;
+            } else {
+                /* On read failure, set to 0 */
+                dest->type = V_U32;
+                dest->val.u32 = 0;
+                /* Clear input buffer with limit to prevent indefinite blocking */
+                int c;
+                uint32_t clear_count = 0;
+                const uint32_t MAX_CLEAR = 1024;
+                while (clear_count < MAX_CLEAR && (c = getchar()) != '\n' && c != EOF) {
+                    clear_count++;
+                }
+            }
+            break;
+        }
+        
+        case OP_READ_F32: {
+            var_value_t* dest = get_stack_var(vm, hdr.operand);
+            if (!dest) { status = VM_ERR_INVALID_STACK_VAR_IDX; break; }
+            
+            /* Safe: scanf with %f reads into fixed-size float variable, no buffer overflow risk */
+            float value;
+            if (scanf("%f", &value) == 1) {
+                dest->type = V_FLOAT;
+                dest->val.f32 = value;
+            } else {
+                /* On read failure, set to 0.0 */
+                dest->type = V_FLOAT;
+                dest->val.f32 = 0.0f;
+                /* Clear input buffer with limit to prevent indefinite blocking */
+                int c;
+                uint32_t clear_count = 0;
+                const uint32_t MAX_CLEAR = 1024;
+                while (clear_count < MAX_CLEAR && (c = getchar()) != '\n' && c != EOF) {
+                    clear_count++;
+                }
+            }
+            break;
+        }
+        
+        case OP_READ_STR: {
+            uint32_t buf_idx = imm1.u32;
+            if (!validate_buffer_idx(buf_idx)) { status = VM_ERR_INVALID_BUFFER_IDX; break; }
+            
+            membuf_t* buf = &vm->g_membuf[buf_idx];
+            buf->type = MB_U8;
+            
+            /* Read string from stdin up to newline or max length */
+            uint32_t i = 0;
+            int c;
+            while (i < MEMBUF_U8_COUNT - 1) {
+                c = getchar();
+                if (c == EOF || c == '\n') {
+                    break;
+                }
+                buf->buf.u8x256[i] = (uint8_t)c;
+                i++;
+            }
+            
+            /* Null terminate */
+            buf->buf.u8x256[i] = 0;
+            
+            /* If buffer is full and we haven't hit newline, discard remaining input */
+            if (i == MEMBUF_U8_COUNT - 1 && c != '\n' && c != EOF) {
+                while ((c = getchar()) != '\n' && c != EOF) {}
+            }
+            break;
+        }
         
         default:
             status = VM_ERR_INVALID_OPCODE;
